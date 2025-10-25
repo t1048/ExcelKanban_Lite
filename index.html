@@ -248,12 +248,17 @@
     }
 
     .filter select,
-    .filter input[type="date"] {
+    .filter input[type="date"],
+    .filter input[type="text"] {
       background: #0a1020;
       color: var(--text);
       border: 1px solid rgba(255, 255, 255, 0.12);
       border-radius: 10px;
       padding: 6px 10px;
+    }
+
+    .filter select[multiple] {
+      min-height: 96px;
     }
 
     .status-checks {
@@ -380,6 +385,11 @@
 
   <!-- フィルター -->
   <div class="filters-bar" id="filters-bar">
+    <div class="filter" style="min-width:220px;flex:1;">
+      <label for="flt-keyword">キーワード</label>
+      <input type="text" id="flt-keyword" placeholder="タスク・備考を検索" />
+    </div>
+
     <div class="filter">
       <label for="flt-assignee">担当者</label>
       <select id="flt-assignee">
@@ -492,7 +502,8 @@
     let FILTERS = {
       assignee: '__ALL__',
       statuses: new Set(),              // 初期化時に全ONにする
-      date: { mode: 'none', from: '', to: '' }
+      date: { mode: 'none', from: '', to: '' },
+      keyword: ''
     };
     let TASKS = [];
     let CURRENT_EDIT = null;
@@ -515,6 +526,8 @@
           TASKS = await api.get_tasks();
         }
       }
+      TASKS = Array.isArray(TASKS) ? TASKS.map(normalizeTask) : [];
+
       if (FILTERS.statuses.size === 0 && Array.isArray(STATUSES)) {
         STATUSES.forEach(s => FILTERS.statuses.add(s));
       }
@@ -598,6 +611,11 @@
         wrap.appendChild(lbl);
       });
 
+      // キーワード
+      const keywordEl = document.getElementById('flt-keyword');
+      keywordEl.value = FILTERS.keyword || '';
+      keywordEl.oninput = () => { FILTERS.keyword = keywordEl.value; renderBoard(); };
+
       // 担当者（セレクト）
       const sel = document.getElementById('flt-assignee');
       const selected = FILTERS.assignee;
@@ -646,7 +664,12 @@
 
       // 解除ボタン
       document.getElementById('btn-clear-filters').onclick = () => {
-        FILTERS = { assignee: '__ALL__', statuses: new Set(STATUSES), date: { mode: 'none', from: '', to: '' } };
+        FILTERS = {
+          assignee: '__ALL__',
+          statuses: new Set(STATUSES),
+          date: { mode: 'none', from: '', to: '' },
+          keyword: ''
+        };
         buildFiltersUI();
         renderBoard();
       };
@@ -727,7 +750,11 @@
       document.getElementById('btn-reload').addEventListener('click', async () => {
         try {
           const r = await api.reload_from_excel();
-          if (r?.tasks) TASKS = r.tasks;
+          if (r?.tasks) {
+            TASKS = Array.isArray(r.tasks) ? r.tasks.map(normalizeTask) : [];
+          } else {
+            TASKS = [];
+          }
           if (r?.statuses) STATUSES = r.statuses;
           if (FILTERS.statuses.size === 0 && Array.isArray(STATUSES)) {
             STATUSES.forEach(s => FILTERS.statuses.add(s));
@@ -752,42 +779,64 @@
       return isNaN(dt.getTime()) ? null : dt;
     }
 
+    function normalizeTask(task) {
+      if (!task || typeof task !== 'object') {
+        return { No: null, ステータス: '', タスク: '', 担当者: '', 期限: '', 備考: '' };
+      }
+      return {
+        No: task.No ?? null,
+        ステータス: task.ステータス || '',
+        タスク: task.タスク || '',
+        担当者: task.担当者 || '',
+        期限: task.期限 || '',
+        備考: task.備考 || ''
+      };
+    }
+
     function getFilteredTasks() {
       const assignee = FILTERS.assignee;
       const statuses = FILTERS.statuses;
       const df = FILTERS.date;
+      const keyword = (FILTERS.keyword || '').trim().toLowerCase();
 
       return TASKS.filter(t => {
-        // 担当者
-        if (assignee !== '__ALL__') {
-          if ((t.担当者 || '') !== assignee) return false;
+        if (assignee !== '__ALL__' && (t.担当者 || '') !== assignee) {
+          return false;
         }
-        // ステータス
-        if (!statuses.has(t.ステータス)) return false;
 
-        // 期限
+        if (!statuses.has(t.ステータス)) {
+          return false;
+        }
+
+        if (keyword) {
+          const haystack = [
+            t.タスク || '',
+            t.備考 || ''
+          ].join(' ').toLowerCase();
+          if (!haystack.includes(keyword)) return false;
+        }
+
         if (df.mode === 'none') return true;
+
         const due = parseISO(t.期限 || '');
         if (!due) return false; // 期限が無いカードは条件指定時は除外
 
         if (df.mode === 'before') {
           const d = parseISO(df.from);
           if (!d) return true; // 入力未指定なら全通し
-          // 期限 <= 指定日
-          return (due.getTime() <= d.getTime());
+          return due.getTime() <= d.getTime();
         }
         if (df.mode === 'after') {
           const d = parseISO(df.from);
           if (!d) return true;
-          // 期限 >= 指定日
-          return (due.getTime() >= d.getTime());
+          return due.getTime() >= d.getTime();
         }
         if (df.mode === 'range') {
           const f = parseISO(df.from);
           const t2 = parseISO(df.to);
-          if (f && t2) return (f.getTime() <= due.getTime() && due.getTime() <= t2.getTime());
-          if (f && !t2) return (f.getTime() <= due.getTime());
-          if (!f && t2) return (due.getTime() <= t2.getTime());
+          if (f && t2) return f.getTime() <= due.getTime() && due.getTime() <= t2.getTime();
+          if (f && !t2) return f.getTime() <= due.getTime();
+          if (!f && t2) return due.getTime() <= t2.getTime();
           return true;
         }
         return true;
@@ -877,12 +926,12 @@
         try {
           if (mode === 'create') {
             const created = await api.add_task(payload);
-            TASKS.push(created);
+            TASKS.push(normalizeTask(created));
           } else {
             const no = CURRENT_EDIT;
             const updated = await api.update_task(no, payload);
             const i = TASKS.findIndex(x => x.No === no);
-            if (i >= 0) TASKS[i] = updated;
+            if (i >= 0) TASKS[i] = normalizeTask(updated);
           }
           closeModal(); renderBoard(); buildFiltersUI();
         } catch (err) {

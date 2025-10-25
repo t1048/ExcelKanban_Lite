@@ -129,7 +129,6 @@ class TaskStore:
             assignee = str(task.get("担当者", "") or "").strip()
             notes = str(task.get("備考", "") or "")
             due = _from_iso_date_str(task.get("期限", ""))
-
             row = {
                 "No": int(no_value),
                 "ステータス": status,
