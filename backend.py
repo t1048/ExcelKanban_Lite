@@ -7,7 +7,7 @@ import os
 import shutil
 import threading
 from pathlib import Path
-from typing import Any, Dict, Iterable, List
+from typing import Any, Dict, List
 import datetime as dt
 
 import pandas as pd
@@ -17,8 +17,7 @@ from openpyxl.utils import get_column_letter, range_boundaries
 from openpyxl.worksheet.datavalidation import DataValidation
 
 
-REQUIRED_COLUMNS = [
-    "No",
+TASK_COLUMNS = [
     "ステータス",
     "タスク",
     "担当者",
@@ -90,7 +89,7 @@ class TaskStore:
     def __init__(self, excel_path: Path, sheet_name: str | None = None):
         self.excel_path = excel_path
         self._lock = threading.RLock()
-        self._df = pd.DataFrame(columns=REQUIRED_COLUMNS)
+        self._df = pd.DataFrame(columns=TASK_COLUMNS)
         self._statuses: List[str] = list(DEFAULT_STATUSES)
         self._requested_sheet_name: str | None = (
             sheet_name.strip() if isinstance(sheet_name, str) and sheet_name.strip() else None
@@ -103,7 +102,7 @@ class TaskStore:
         with self._lock:
             requested_sheet = self._requested_sheet_name
             if not self.excel_path.exists():
-                df = pd.DataFrame(columns=REQUIRED_COLUMNS)
+                df = pd.DataFrame(columns=TASK_COLUMNS)
                 df.to_excel(
                     self.excel_path,
                     index=False,
@@ -116,7 +115,7 @@ class TaskStore:
                     sheet_name = requested_sheet
                 else:
                     ws = wb.create_sheet(title=requested_sheet)
-                    ws.append(REQUIRED_COLUMNS)
+                    ws.append(TASK_COLUMNS)
                     wb.save(self.excel_path)
                     sheet_name = requested_sheet
             else:
@@ -127,18 +126,20 @@ class TaskStore:
 
             df = pd.read_excel(
                 self.excel_path,
-                dtype={"No": "Int64"},
                 sheet_name=sheet_name,
                 engine="openpyxl",
             )
 
-            for col in REQUIRED_COLUMNS:
+            if "No" in df.columns:
+                df = df.drop(columns=["No"])
+
+            for col in TASK_COLUMNS:
                 if col not in df.columns:
                     df[col] = pd.NA
 
-            df = df[REQUIRED_COLUMNS].copy()
+            df = df[TASK_COLUMNS].copy()
 
-            df["No"] = self._coerce_no_series(df.get("No"))
+            df = df.dropna(how="all", subset=TASK_COLUMNS).reset_index(drop=True)
 
             if "期限" in df.columns:
                 df["期限"] = pd.to_datetime(df["期限"], errors="coerce").dt.date
@@ -188,7 +189,7 @@ class TaskStore:
                 min_col, min_row, max_col, max_row = range_boundaries(str(cell_range))
                 for col_idx in range(min_col, max_col + 1):
                     header = ws.cell(row=1, column=col_idx).value
-                    if isinstance(header, str) and header in REQUIRED_COLUMNS:
+                    if isinstance(header, str) and header in TASK_COLUMNS:
                         validations[header] = list(values)
         return validations
 
@@ -245,12 +246,6 @@ class TaskStore:
         if isinstance(value, dt.date):
             return value
 
-        if col_name == "No":
-            try:
-                return int(value)
-            except Exception:
-                return value
-
         if col_name == "期限":
             if isinstance(value, str):
                 parsed = _from_iso_date_str(value)
@@ -266,34 +261,9 @@ class TaskStore:
         escaped = [v.replace('"', '""') for v in values]
         return '"' + ",".join(escaped) + '"'
 
-    def _coerce_no_series(self, series: Iterable[Any] | None) -> pd.Series:
-        if series is None:
-            return pd.Series(dtype="Int64")
-        coerced = pd.to_numeric(series, errors="coerce")
-        index = getattr(series, "index", None)
-        return pd.Series(coerced, index=index, dtype="Int64")
-
-    def _ensure_unique_no(self, no_value: int):
-        series = self._coerce_no_series(self._df.get("No"))
-        if (series == int(no_value)).any():
-            raise ValueError(f"No={no_value} は既に存在します。")
-
-    def _next_no(self) -> int:
-        series = self._coerce_no_series(self._df.get("No"))
-        if series.empty or series.dropna().empty:
-            return 1
-        return int(series.dropna().astype(int).max()) + 1
-
-    def _find_index_by_no(self, no_value: int) -> pd.Index:
-        series = self._coerce_no_series(self._df.get("No"))
-        if series.empty:
-            return pd.Index([], dtype="int64")
-        mask = series == int(no_value)
-        return self._df.index[mask.fillna(False)]
-
     def get_tasks(self) -> List[Dict[str, Any]]:
         with self._lock:
-            return [self._format_row(self._df.loc[idx]) for idx in self._df.index]
+            return [self._format_row(i, self._df.iloc[i]) for i in range(len(self._df))]
 
     def get_statuses(self) -> List[str]:
         with self._lock:
@@ -306,9 +276,7 @@ class TaskStore:
     def set_validations(self, mapping: Dict[str, List[Any]]):
         with self._lock:
             cleaned: Dict[str, List[str]] = {}
-            for col in REQUIRED_COLUMNS:
-                if col == "No":
-                    continue
+            for col in TASK_COLUMNS:
                 raw_values = mapping.get(col)
                 if not raw_values:
                     continue
@@ -331,9 +299,9 @@ class TaskStore:
             else:
                 self._rebuild_statuses_from_df()
 
-    def _format_row(self, row: pd.Series) -> Dict[str, Any]:
+    def _format_row(self, idx: int, row: pd.Series) -> Dict[str, Any]:
         return {
-            "No": None if pd.isna(row["No"]) else int(row["No"]),
+            "No": int(idx + 1),
             "ステータス": "" if pd.isna(row["ステータス"]) else str(row["ステータス"]),
             "タスク": "" if pd.isna(row["タスク"]) else str(row["タスク"]),
             "担当者": "" if pd.isna(row["担当者"]) else str(row["担当者"]),
@@ -341,6 +309,15 @@ class TaskStore:
             "期限": _to_iso_date_str(row["期限"]),
             "備考": "" if pd.isna(row["備考"]) else str(row["備考"]),
         }
+
+    def _resolve_row_index(self, no_value: int) -> int:
+        try:
+            no = int(no_value)
+        except (TypeError, ValueError):
+            raise KeyError(f"No={no_value} は存在しません。")
+        if no <= 0 or no > len(self._df):
+            raise KeyError(f"No={no_value} は存在しません。")
+        return no - 1
 
     def _ensure_status_registered(self, name: str):
         name = name.strip()
@@ -350,12 +327,6 @@ class TaskStore:
     def add_task(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         with self._lock:
             task = dict(payload)
-            raw_no = task.get("No")
-            if raw_no in (None, "", pd.NA):
-                no_value = self._next_no()
-            else:
-                no_value = int(raw_no)
-                self._ensure_unique_no(no_value)
 
             status = str(task.get("ステータス", "") or "").strip()
             title = str(task.get("タスク", "") or "").strip()
@@ -365,7 +336,6 @@ class TaskStore:
             priority = _normalize_priority(task.get("優先度"))
 
             row = {
-                "No": int(no_value),
                 "ステータス": status,
                 "タスク": title,
                 "担当者": assignee,
@@ -374,43 +344,42 @@ class TaskStore:
                 "備考": notes,
             }
 
-            self._df.loc[len(self._df)] = row
+            new_index = len(self._df)
+            self._df.loc[new_index] = row
             self._ensure_status_registered(status)
-            return self._format_row(self._df.iloc[-1])
+            return self._format_row(new_index, self._df.iloc[new_index])
 
     def update_task(self, no_value: int, patch: Dict[str, Any]) -> Dict[str, Any]:
         with self._lock:
-            idx = self._find_index_by_no(int(no_value))
-            if len(idx) == 0:
-                raise KeyError(f"No={no_value} は存在しません。")
-
-            i = idx[0]
+            i = self._resolve_row_index(int(no_value))
+            row_index = self._df.index[i]
             if "ステータス" in patch:
                 status = str(patch["ステータス"] or "").strip()
                 self._ensure_status_registered(status)
-                self._df.at[i, "ステータス"] = status
+                self._df.at[row_index, "ステータス"] = status
             if "タスク" in patch:
-                self._df.at[i, "タスク"] = str(patch["タスク"] or "").strip()
+                self._df.at[row_index, "タスク"] = str(patch["タスク"] or "").strip()
             if "担当者" in patch:
-                self._df.at[i, "担当者"] = str(patch["担当者"] or "").strip()
+                self._df.at[row_index, "担当者"] = str(patch["担当者"] or "").strip()
             if "優先度" in patch:
-                self._df.at[i, "優先度"] = _normalize_priority(patch["優先度"])
+                self._df.at[row_index, "優先度"] = _normalize_priority(patch["優先度"])
             if "期限" in patch:
-                self._df.at[i, "期限"] = _from_iso_date_str(patch["期限"])
+                self._df.at[row_index, "期限"] = _from_iso_date_str(patch["期限"])
             if "備考" in patch:
-                self._df.at[i, "備考"] = str(patch["備考"] or "")
+                self._df.at[row_index, "備考"] = str(patch["備考"] or "")
 
-            return self._format_row(self._df.loc[i])
+            return self._format_row(i, self._df.loc[row_index])
 
     def move_task(self, no_value: int, new_status: str) -> Dict[str, Any]:
         return self.update_task(int(no_value), {"ステータス": new_status})
 
     def delete_task(self, no_value: int) -> bool:
         with self._lock:
-            idx = self._find_index_by_no(int(no_value))
-            if len(idx) == 0:
+            try:
+                idx = self._resolve_row_index(int(no_value))
+            except KeyError:
                 return False
-            self._df = self._df.drop(index=idx).reset_index(drop=True)
+            self._df = self._df.drop(index=self._df.index[idx]).reset_index(drop=True)
             return True
 
     def save_excel(self) -> str:
@@ -437,10 +406,10 @@ class TaskStore:
                     ws = wb[self._sheet_name]
 
                 ws.delete_rows(1, ws.max_row)
-                ws.append(REQUIRED_COLUMNS)
+                ws.append(TASK_COLUMNS)
                 for row in df.itertuples(index=False, name=None):
                     values: List[Any] = []
-                    for col_name, value in zip(REQUIRED_COLUMNS, row):
+                    for col_name, value in zip(TASK_COLUMNS, row):
                         values.append(self._to_excel_value(col_name, value))
                     ws.append(values)
 
@@ -448,10 +417,10 @@ class TaskStore:
                     ws.data_validations.dataValidation = []
 
                 for col_name, values in self._validations.items():
-                    if col_name not in REQUIRED_COLUMNS or not values:
+                    if col_name not in TASK_COLUMNS or not values:
                         continue
                     try:
-                        idx = REQUIRED_COLUMNS.index(col_name) + 1
+                        idx = TASK_COLUMNS.index(col_name) + 1
                     except ValueError:
                         continue
                     col_letter = get_column_letter(idx)
