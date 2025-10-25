@@ -7,7 +7,7 @@ REM Minicondaの flet 環境をアクティベート
 CALL "%USERPROFILE%\miniconda3\Scripts\activate.bat" py310
 
 REM Fletアプリの起動（main.pyを実行）
-python backend.py
+python backend.py --excel "./task.xlsx"
 
 ENDLOCAL
 pause
