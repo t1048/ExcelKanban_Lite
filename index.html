@@ -627,7 +627,6 @@
         const status = baseStatuses[idx % baseStatuses.length];
         statusSet.add(status);
         return {
-          No: idx + 1,
           ステータス: status,
           タスク: `サンプルタスク ${idx + 1}`,
           担当者: ['田中', '佐藤', '鈴木', '高橋'][idx % 4],
@@ -660,22 +659,11 @@
         return text;
       };
 
-      const normalizeTask = (payload, existingNo) => {
-        const assignedNo = (() => {
-          if (existingNo !== undefined && existingNo !== null) {
-            return Number(existingNo);
-          }
-          if (payload?.No !== undefined && payload.No !== null && payload.No !== '') {
-            return Number(payload.No) || allocateNo();
-          }
-          return allocateNo();
-        })();
-
+      const normalizeTask = (payload) => {
         const status = sanitizeStatus(payload?.ステータス);
         statusSet.add(status);
 
         return {
-          No: assignedNo,
           ステータス: status,
           タスク: String(payload?.タスク ?? '').trim(),
           担当者: String(payload?.担当者 ?? '').trim(),
@@ -685,9 +673,14 @@
         };
       };
 
-      const allocateNo = () => {
-        const maxNo = tasks.reduce((acc, t) => Math.max(acc, Number(t?.No) || 0), 0);
-        return maxNo + 1;
+      const withSequentialNo = () => tasks.map((task, idx) => ({ ...cloneTask(task), No: idx + 1 }));
+
+      const locateTask = (no) => {
+        const idx = Number(no) - 1;
+        if (!Number.isInteger(idx) || idx < 0 || idx >= tasks.length) {
+          return null;
+        }
+        return { index: idx, record: tasks[idx] };
       };
 
       const updateValidations = (payload) => {
@@ -717,7 +710,7 @@
 
       return {
         async get_tasks() {
-          return tasks.map(cloneTask);
+          return withSequentialNo();
         },
         async get_statuses() {
           return Array.from(statusSet);
@@ -730,21 +723,21 @@
           return { ok: true, validations: { ...updated }, statuses: Array.from(statusSet) };
         },
         async add_task(payload) {
-          const task = normalizeTask(payload, null);
-          tasks.push(task);
-          return cloneTask(task);
+          const record = normalizeTask(payload);
+          tasks.push(record);
+          return { ...cloneTask(record), No: tasks.length };
         },
         async update_task(no, payload) {
-          const target = tasks.find(t => Number(t.No) === Number(no));
-          if (!target) throw new Error('指定したタスクが見つかりません');
-          const updated = normalizeTask({ ...target, ...payload }, target.No);
-          Object.assign(target, updated);
-          return cloneTask(target);
+          const located = locateTask(no);
+          if (!located) throw new Error('指定したタスクが見つかりません');
+          const updated = normalizeTask({ ...located.record, ...payload });
+          tasks[located.index] = updated;
+          return { ...cloneTask(updated), No: located.index + 1 };
         },
         async delete_task(no) {
-          const idx = tasks.findIndex(t => Number(t.No) === Number(no));
-          if (idx === -1) return false;
-          tasks.splice(idx, 1);
+          const located = locateTask(no);
+          if (!located) return false;
+          tasks.splice(located.index, 1);
           return true;
         },
         async move_task(no, status) {
@@ -756,7 +749,7 @@
         async reload_from_excel() {
           return {
             ok: true,
-            tasks: tasks.map(cloneTask),
+            tasks: withSequentialNo(),
             statuses: Array.from(statusSet),
             validations: { ...validations }
           };
@@ -798,8 +791,7 @@
     });
 
     /* ===================== 状態 ===================== */
-    const REQUIRED_COLUMNS = ["No", "ステータス", "タスク", "担当者", "優先度", "期限", "備考"];
-    const VALIDATION_COLUMNS = REQUIRED_COLUMNS.filter(col => col !== 'No');
+    const VALIDATION_COLUMNS = ["ステータス", "タスク", "担当者", "優先度", "期限", "備考"];
     const DEFAULT_STATUSES = ['未着手', '進行中', '完了', '保留'];
     let STATUSES = [];
     let FILTERS = {
@@ -1513,7 +1505,12 @@
         try {
           const ok = await api.delete_task(CURRENT_EDIT);
           if (ok) {
-            TASKS = TASKS.filter(x => x.No !== CURRENT_EDIT);
+            if (typeof api.get_tasks === 'function') {
+              TASKS = await api.get_tasks();
+            } else {
+              TASKS = TASKS.filter(x => x.No !== CURRENT_EDIT).map((task, idx) => ({ ...task, No: idx + 1 }));
+            }
+            CURRENT_EDIT = null;
             closeModal(); renderBoard(); buildFiltersUI();
           } else {
             alert('削除できませんでした');
