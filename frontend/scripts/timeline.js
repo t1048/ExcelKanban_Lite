@@ -1,203 +1,56 @@
+const {
+  createMockApi,
+  ready,
+  sanitizeTaskRecord,
+  sanitizeTaskList,
+  normalizeStatePayload,
+  normalizeStatusLabel,
+  denormalizeStatusLabel,
+  normalizeValidationValues,
+  createPriorityHelper,
+  setupRuntime,
+  PRIORITY_DEFAULT_OPTIONS,
+  UNSET_STATUS_LABEL,
+} = window.TaskAppCommon;
+
 let api;
 let RUN_MODE = 'mock';
 let TASKS = [];
 let STATUSES = [];
-const PRIORITY_DEFAULT_OPTIONS = ['高', '中', '低'];
-const UNSET_STATUS_LABEL = 'ステータス未設定';
 let VALIDATIONS = {};
 let CURRENT_EDIT = null;
 const ASSIGNEE_FILTER_ALL = '';
 const ASSIGNEE_FILTER_UNASSIGNED = '__UNASSIGNED__';
 const ASSIGNEE_UNASSIGNED_LABEL = '（未割り当て）';
 
-function sanitizeTaskRecord(task, fallbackIndex = 0) {
-  if (!task || typeof task !== 'object') return null;
-  const title = String(task.タスク ?? '').trim();
-  if (!title) return null;
-  const sanitized = { ...task, タスク: title };
-  const noValue = sanitized.No;
-  const noText = noValue === null || noValue === undefined ? '' : String(noValue).trim();
-  if (!noText) {
-    sanitized.No = fallbackIndex + 1;
-  }
-  return sanitized;
-}
+const priorityHelper = createPriorityHelper({
+  getValidations: () => VALIDATIONS,
+  defaultOptions: PRIORITY_DEFAULT_OPTIONS,
+});
+const getPriorityOptions = () => priorityHelper.getOptions();
+const getDefaultPriorityValue = () => priorityHelper.getDefaultValue();
+const applyPriorityOptions = (selectEl, currentValue, preferDefault = false) => (
+  priorityHelper.applyOptions(selectEl, currentValue, preferDefault)
+);
 
-function sanitizeTaskList(rawList) {
-  if (!Array.isArray(rawList)) return [];
-  const result = [];
-  rawList.forEach(item => {
-    const sanitized = sanitizeTaskRecord(item, result.length);
-    if (sanitized) {
-      result.push(sanitized);
-    }
-  });
-  return result;
-}
-
-window.addEventListener('pywebviewready', async () => {
-  try {
-    api = window.pywebview.api;
-    RUN_MODE = 'pywebview';
+setupRuntime({
+  mockApiFactory: createMockApi,
+  onApiChanged: ({ api: nextApi, runMode }) => {
+    api = nextApi;
+    RUN_MODE = runMode;
+    console.log('[timeline] run mode:', RUN_MODE);
+  },
+  onInit: async () => {
     await init(true);
-  } catch (err) {
-    console.error('pywebviewready failed', err);
-  }
+  },
+  onRealtimeUpdate: (payload) => (
+    applyStateFromPayload(payload, { fallbackToApi: false })
+  ),
 });
 
-document.addEventListener('DOMContentLoaded', async () => {
-  api = window.pywebview?.api || createMockApi();
-  if (window.pywebview?.api) RUN_MODE = 'pywebview';
-  await init(true);
+ready(() => {
   wireControls();
 });
-
-function createMockApi() {
-  const baseStatuses = ['未着手', '進行中', '完了', '保留'];
-  const statusSet = new Set(baseStatuses);
-  const pad = n => String(n).padStart(2, '0');
-  const toISO = date => `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
-  const today = new Date();
-  const majorCategories = ['プロジェクトA', 'プロジェクトB', 'プロジェクトC'];
-  const minorCategories = ['企画', '設計', '実装', '検証'];
-  const sampleTasks = Array.from({ length: 8 }).map((_, idx) => {
-    const due = new Date(today);
-    due.setDate(today.getDate() + idx - 2);
-    const status = baseStatuses[idx % baseStatuses.length];
-    statusSet.add(status);
-    const major = majorCategories[idx % majorCategories.length];
-    const minor = minorCategories[idx % minorCategories.length];
-    return {
-      ステータス: status,
-      大分類: major,
-      中分類: minor,
-      タスク: `サンプルタスク ${idx + 1}`,
-      担当者: ['田中', '佐藤', '鈴木', '高橋'][idx % 4],
-      優先度: ['高', '中', '低'][idx % 3],
-      期限: toISO(due),
-      備考: idx % 2 === 0 ? 'モックデータ' : ''
-    };
-  });
-  const tasks = [...sampleTasks];
-  let validations = {
-    'ステータス': Array.from(statusSet),
-    '大分類': Array.from(new Set(majorCategories)),
-    '中分類': Array.from(new Set(minorCategories)),
-    '優先度': [...PRIORITY_DEFAULT_OPTIONS]
-  };
-
-  const cloneTask = task => ({ ...task });
-
-  const sanitizeStatus = status => {
-    const text = String(status ?? '').trim();
-    if (text) return text;
-    return baseStatuses[0];
-  };
-
-  const normalizeDue = value => {
-    if (!value) return '';
-    const parsed = new Date(value);
-    if (Number.isNaN(parsed.getTime())) return '';
-    return toISO(parsed);
-  };
-
-  const normalizePriority = value => {
-    if (value === null || value === undefined) return '';
-    const text = String(value).trim();
-    return text;
-  };
-
-  const normalizeTask = (payload) => {
-    const status = sanitizeStatus(payload?.ステータス);
-    statusSet.add(status);
-
-    const major = String(payload?.大分類 ?? '').trim();
-    const minor = String(payload?.中分類 ?? '').trim();
-
-    const title = String(payload?.タスク ?? '').trim();
-    if (!title) {
-      throw new Error('タスクは必須です');
-    }
-
-    return {
-      ステータス: status,
-      大分類: major,
-      中分類: minor,
-      タスク: title,
-      担当者: String(payload?.担当者 ?? '').trim(),
-      優先度: normalizePriority(payload?.優先度),
-      期限: normalizeDue(payload?.期限),
-      備考: String(payload?.備考 ?? '')
-    };
-  };
-
-  const withSequentialNo = () => tasks.map((task, idx) => ({ ...cloneTask(task), No: idx + 1 }));
-
-  const locateTask = (no) => {
-    const idx = Number(no) - 1;
-    if (!Number.isInteger(idx) || idx < 0 || idx >= tasks.length) {
-      return null;
-    }
-    return { index: idx, record: tasks[idx] };
-  };
-
-  const updateValidations = (payload) => {
-    const withFallbacks = (source) => {
-      const merged = { ...source };
-      if (!Array.isArray(merged['ステータス']) || merged['ステータス'].length === 0) {
-        merged['ステータス'] = Array.from(statusSet);
-      }
-      if (!Array.isArray(merged['優先度']) || merged['優先度'].length === 0) {
-        merged['優先度'] = [...PRIORITY_DEFAULT_OPTIONS];
-      }
-      return merged;
-    };
-
-    if (!payload || typeof payload !== 'object') {
-      validations = withFallbacks({});
-      return validations;
-    }
-    const cleaned = {};
-    Object.keys(payload).forEach(key => {
-      const raw = Array.isArray(payload[key]) ? payload[key] : [];
-      const seen = new Set();
-      const values = [];
-      raw.forEach(v => {
-        const text = String(v ?? '').trim();
-        if (!text || seen.has(text)) return;
-        seen.add(text);
-        values.push(text);
-      });
-      if (values.length > 0) cleaned[key] = values;
-    });
-    validations = withFallbacks(cleaned);
-    if (Array.isArray(validations['ステータス'])) {
-      validations['ステータス'].forEach(v => statusSet.add(v));
-    }
-    return validations;
-  };
-
-  return {
-    async get_tasks() {
-      return withSequentialNo();
-    },
-    async get_statuses() {
-      return Array.from(statusSet);
-    },
-    async get_validations() {
-      return { ...validations };
-    },
-    async update_validations(payload) {
-      const updated = updateValidations(payload);
-      return { ok: true, validations: { ...updated }, statuses: Array.from(statusSet) };
-    },
-    async add_task(payload) {
-      const record = normalizeTask(payload);
-      tasks.push(record);
-      return { ...cloneTask(record), No: tasks.length };
-    },
-    async update_task(no, payload) {
-      const located = locateTask(no);
       if (!located) throw new Error('指定したタスクが見つかりません');
       const updated = normalizeTask({ ...located.record, ...payload });
       tasks[located.index] = updated;
@@ -225,42 +78,80 @@ function createMockApi() {
 async function init(force = false) {
   if (!api) return;
   if (force) {
+    let payload = {};
     try {
       if (RUN_MODE === 'pywebview' && typeof api.reload_from_excel === 'function') {
-        const result = await api.reload_from_excel();
-        const rawTasks = Array.isArray(result?.tasks)
-          ? result.tasks
-          : await api.get_tasks();
-        TASKS = sanitizeTaskList(rawTasks);
-        STATUSES = Array.isArray(result?.statuses) ? result.statuses : await api.get_statuses?.() || [];
-        applyValidationState(result?.validations);
-        if (!result?.validations && typeof api.get_validations === 'function') {
-          try {
-            applyValidationState(await api.get_validations());
-          } catch (err) {
-            console.warn('get_validations failed:', err);
-          }
-        }
+        payload = await api.reload_from_excel();
       } else {
-        STATUSES = typeof api.get_statuses === 'function' ? await api.get_statuses() : [];
-        TASKS = sanitizeTaskList(await api.get_tasks());
+        if (typeof api.get_tasks === 'function') {
+          payload.tasks = await api.get_tasks();
+        }
+        if (typeof api.get_statuses === 'function') {
+          payload.statuses = await api.get_statuses();
+        }
         if (typeof api.get_validations === 'function') {
-          try {
-            applyValidationState(await api.get_validations());
-          } catch (err) {
-            console.warn('get_validations failed:', err);
-            applyValidationState(null);
-          }
-        } else {
-          applyValidationState(null);
+          payload.validations = await api.get_validations();
         }
       }
     } catch (err) {
       console.error('init failed', err);
-      TASKS = [];
-      STATUSES = [];
-      applyValidationState(null);
+      payload = {};
     }
+    await applyStateFromPayload(payload, { fallbackToApi: true });
+    return;
+  }
+
+  ensureRangeDefaults();
+  renderSummary();
+  renderLegend();
+  renderAssigneeFilter();
+  renderTimeline();
+}
+
+async function applyStateFromPayload(payload, { fallbackToApi = false } = {}) {
+  const data = normalizeStatePayload(payload);
+
+  let tasksUpdated = false;
+  if (Array.isArray(data.tasks)) {
+    TASKS = sanitizeTaskList(data.tasks);
+    tasksUpdated = true;
+  }
+  if (!tasksUpdated && fallbackToApi && typeof api?.get_tasks === 'function') {
+    try {
+      TASKS = sanitizeTaskList(await api.get_tasks());
+      tasksUpdated = true;
+    } catch (err) {
+      console.error('get_tasks failed:', err);
+      TASKS = [];
+    }
+  }
+
+  let statusesUpdated = false;
+  if (Array.isArray(data.statuses)) {
+    STATUSES = data.statuses;
+    statusesUpdated = true;
+  }
+  if (!statusesUpdated && fallbackToApi && typeof api?.get_statuses === 'function') {
+    try {
+      STATUSES = await api.get_statuses();
+      statusesUpdated = true;
+    } catch (err) {
+      console.error('get_statuses failed:', err);
+      STATUSES = [];
+    }
+  }
+
+  let validationPayload = data.validations;
+  if (!validationPayload && fallbackToApi && typeof api?.get_validations === 'function') {
+    try {
+      validationPayload = await api.get_validations();
+    } catch (err) {
+      console.warn('get_validations failed:', err);
+      validationPayload = null;
+    }
+  }
+  if (validationPayload !== undefined) {
+    applyValidationState(validationPayload);
   }
 
   ensureRangeDefaults();
@@ -699,29 +590,6 @@ function sanitizeClass(value) {
   return value.replace(/[^\w-]/g, '-');
 }
 
-function normalizeStatusLabel(value) {
-  const text = String(value ?? '').trim();
-  return text || UNSET_STATUS_LABEL;
-}
-
-function denormalizeStatusLabel(value) {
-  const text = String(value ?? '').trim();
-  return text === UNSET_STATUS_LABEL ? '' : text;
-}
-
-function normalizeValidationValues(rawList) {
-  if (!Array.isArray(rawList)) return [];
-  const seen = new Set();
-  const values = [];
-  rawList.forEach(item => {
-    const text = String(item ?? '').trim();
-    if (!text || seen.has(text)) return;
-    seen.add(text);
-    values.push(text);
-  });
-  return values;
-}
-
 function applyValidationState(raw) {
   const next = {};
   if (raw && typeof raw === 'object') {
@@ -733,77 +601,6 @@ function applyValidationState(raw) {
     next['優先度'] = [...PRIORITY_DEFAULT_OPTIONS];
   }
   VALIDATIONS = next;
-}
-
-function getPriorityOptions() {
-  const base = Array.isArray(VALIDATIONS['優先度']) && VALIDATIONS['優先度'].length > 0
-    ? VALIDATIONS['優先度']
-    : PRIORITY_DEFAULT_OPTIONS;
-  const seen = new Set();
-  const options = [];
-  base.forEach(value => {
-    const text = String(value ?? '').trim();
-    if (!text || seen.has(text)) return;
-    seen.add(text);
-    options.push(text);
-  });
-  if (options.length === 0) {
-    PRIORITY_DEFAULT_OPTIONS.forEach(value => {
-      if (!seen.has(value)) {
-        seen.add(value);
-        options.push(value);
-      }
-    });
-  }
-  return options;
-}
-
-function getDefaultPriorityValue() {
-  const options = getPriorityOptions();
-  if (options.includes('中')) return '中';
-  return options[0] || '';
-}
-
-function applyPriorityOptions(selectEl, currentValue, preferDefault = false) {
-  if (!selectEl) return;
-  const normalized = currentValue === null || currentValue === undefined
-    ? ''
-    : String(currentValue).trim();
-  const options = getPriorityOptions();
-  const fragments = [];
-  const addOption = (value, label = value) => {
-    const opt = document.createElement('option');
-    opt.value = value;
-    opt.textContent = label;
-    fragments.push(opt);
-  };
-
-  if (!normalized && !preferDefault) {
-    addOption('', '（未設定）');
-  }
-  options.forEach(value => addOption(value));
-  if (normalized && !options.includes(normalized)) {
-    addOption(normalized);
-  }
-
-  selectEl.innerHTML = '';
-  fragments.forEach(opt => selectEl.appendChild(opt));
-
-  const values = Array.from(selectEl.options).map(opt => opt.value);
-  let selection = normalized;
-  if (!selection || !values.includes(selection)) {
-    if (preferDefault) {
-      selection = getDefaultPriorityValue();
-    } else if (values.includes('')) {
-      selection = '';
-    } else {
-      selection = getDefaultPriorityValue();
-    }
-  }
-  if (!values.includes(selection)) {
-    selection = values[0] || '';
-  }
-  selectEl.value = selection;
 }
 
 function openEdit(no) {

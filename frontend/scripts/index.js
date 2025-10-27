@@ -1,257 +1,44 @@
 /* ===================== ランタイム切替（mock / pywebview） ===================== */
+const {
+  createMockApi,
+  ready,
+  sanitizeTaskRecord,
+  sanitizeTaskList,
+  normalizeStatePayload,
+  normalizeStatusLabel,
+  denormalizeStatusLabel,
+  normalizeValidationValues,
+  createPriorityHelper,
+  setupRuntime,
+  PRIORITY_DEFAULT_OPTIONS,
+  DEFAULT_STATUSES,
+  UNSET_STATUS_LABEL,
+} = window.TaskAppCommon;
+
 let api;                  // 実際に使う API （後で差し替える）
 let RUN_MODE = 'mock';    // 'mock' | 'pywebview'
 let WIRED = false;        // ツールバー多重バインド防止
-const PRIORITY_DEFAULT_OPTIONS = ['高', '中', '低'];
 
-function createMockApi() {
-  const baseStatuses = ['未着手', '進行中', '完了', '保留'];
-  const statusSet = new Set(baseStatuses);
-  const pad = n => String(n).padStart(2, '0');
-  const toISO = date => `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
-  const today = new Date();
-  const majorCategories = ['プロジェクトA', 'プロジェクトB', 'プロジェクトC'];
-  const minorCategories = ['企画', '設計', '実装', '検証'];
-  const sampleTasks = Array.from({ length: 8 }).map((_, idx) => {
-    const due = new Date(today);
-    due.setDate(today.getDate() + idx - 2);
-    const status = baseStatuses[idx % baseStatuses.length];
-    statusSet.add(status);
-    const major = majorCategories[idx % majorCategories.length];
-    const minor = minorCategories[idx % minorCategories.length];
-    return {
-      ステータス: status,
-      大分類: major,
-      中分類: minor,
-      タスク: `サンプルタスク ${idx + 1}`,
-      担当者: ['田中', '佐藤', '鈴木', '高橋'][idx % 4],
-      優先度: ['高', '中', '低'][idx % 3],
-      期限: toISO(due),
-      備考: idx % 2 === 0 ? 'モックデータ' : ''
-    };
-  });
-  const tasks = [...sampleTasks];
-  let validations = {
-    'ステータス': Array.from(statusSet),
-    '大分類': Array.from(new Set(majorCategories)),
-    '中分類': Array.from(new Set(minorCategories)),
-    '優先度': [...PRIORITY_DEFAULT_OPTIONS]
-  };
-
-  const cloneTask = task => ({ ...task });
-
-  const sanitizeStatus = status => {
-    const text = String(status ?? '').trim();
-    if (text) return text;
-    return baseStatuses[0];
-  };
-
-  const normalizeDue = value => {
-    if (!value) return '';
-    const parsed = new Date(value);
-    if (Number.isNaN(parsed.getTime())) return '';
-    return toISO(parsed);
-  };
-
-  const normalizePriority = value => {
-    if (value === null || value === undefined) return '';
-    const text = String(value).trim();
-    return text;
-  };
-
-  const normalizeTask = (payload) => {
-    const status = sanitizeStatus(payload?.ステータス);
-    statusSet.add(status);
-
-    const major = String(payload?.大分類 ?? '').trim();
-    const minor = String(payload?.中分類 ?? '').trim();
-
-    const title = String(payload?.タスク ?? '').trim();
-    if (!title) {
-      throw new Error('タスクは必須です');
-    }
-
-    return {
-      ステータス: status,
-      大分類: major,
-      中分類: minor,
-      タスク: title,
-      担当者: String(payload?.担当者 ?? '').trim(),
-      優先度: normalizePriority(payload?.優先度),
-      期限: normalizeDue(payload?.期限),
-      備考: String(payload?.備考 ?? '')
-    };
-  };
-
-  const withSequentialNo = () => tasks.map((task, idx) => ({ ...cloneTask(task), No: idx + 1 }));
-
-  const locateTask = (no) => {
-    const idx = Number(no) - 1;
-    if (!Number.isInteger(idx) || idx < 0 || idx >= tasks.length) {
-      return null;
-    }
-    return { index: idx, record: tasks[idx] };
-  };
-
-  const updateValidations = (payload) => {
-    const withFallbacks = (source) => {
-      const merged = { ...source };
-      if (!Array.isArray(merged['ステータス']) || merged['ステータス'].length === 0) {
-        merged['ステータス'] = Array.from(statusSet);
-      }
-      if (!Array.isArray(merged['優先度']) || merged['優先度'].length === 0) {
-        merged['優先度'] = [...PRIORITY_DEFAULT_OPTIONS];
-      }
-      return merged;
-    };
-
-    if (!payload || typeof payload !== 'object') {
-      validations = withFallbacks({});
-      return validations;
-    }
-    const cleaned = {};
-    Object.keys(payload).forEach(key => {
-      const raw = Array.isArray(payload[key]) ? payload[key] : [];
-      const seen = new Set();
-      const values = [];
-      raw.forEach(v => {
-        const text = String(v ?? '').trim();
-        if (!text || seen.has(text)) return;
-        seen.add(text);
-        values.push(text);
-      });
-      if (values.length > 0) cleaned[key] = values;
-    });
-    validations = withFallbacks(cleaned);
-    if (Array.isArray(validations['ステータス'])) {
-      validations['ステータス'].forEach(v => statusSet.add(v));
-    }
-    return validations;
-  };
-
-  return {
-    async get_tasks() {
-      return withSequentialNo();
-    },
-    async get_statuses() {
-      return Array.from(statusSet);
-    },
-    async get_validations() {
-      return { ...validations };
-    },
-    async update_validations(payload) {
-      const updated = updateValidations(payload);
-      return { ok: true, validations: { ...updated }, statuses: Array.from(statusSet) };
-    },
-    async add_task(payload) {
-      const record = normalizeTask(payload);
-      tasks.push(record);
-      return { ...cloneTask(record), No: tasks.length };
-    },
-    async update_task(no, payload) {
-      const located = locateTask(no);
-      if (!located) throw new Error('指定したタスクが見つかりません');
-      const updated = normalizeTask({ ...located.record, ...payload });
-      tasks[located.index] = updated;
-      return { ...cloneTask(updated), No: located.index + 1 };
-    },
-    async delete_task(no) {
-      const located = locateTask(no);
-      if (!located) return false;
-      tasks.splice(located.index, 1);
-      return true;
-    },
-    async move_task(no, status) {
-      return this.update_task(no, { ステータス: status });
-    },
-    async save_excel() {
-      return 'mock://task.xlsx';
-    },
-    async reload_from_excel() {
-      return {
-        ok: true,
-        tasks: withSequentialNo(),
-        statuses: Array.from(statusSet),
-        validations: { ...validations }
-      };
-    }
-  };
-}
-
-
-// DOM 準備
-function ready(fn) {
-  if (document.readyState !== 'loading') return fn();
-  document.addEventListener('DOMContentLoaded', fn);
-}
-
-// pywebview が利用可能になったタイミングで API を差し替えて強制再初期化
-window.addEventListener('pywebviewready', async () => {
-  try {
-    if (window.pywebview?.api) {
-      api = window.pywebview.api;
-      RUN_MODE = 'pywebview';
-      console.log('[kanban] switched to pywebview API');
-      await init(true);  // Excelから取り直し
-    }
-  } catch (e) {
-    console.error('pywebviewready error:', e);
-  }
-});
-
-ready(async () => {
-  if (window.pywebview?.api) {
-    api = window.pywebview.api;
-    RUN_MODE = 'pywebview';
-  } else {
-    api = createMockApi();
-    RUN_MODE = 'mock';
-  }
-  console.log('[kanban] run mode:', RUN_MODE);
-  await init(true);
+setupRuntime({
+  mockApiFactory: createMockApi,
+  onApiChanged: ({ api: nextApi, runMode }) => {
+    api = nextApi;
+    RUN_MODE = runMode;
+    console.log('[kanban] run mode:', RUN_MODE);
+  },
+  onInit: async () => {
+    await init(true);
+  },
+  onRealtimeUpdate: (payload) => (
+    applyStateFromPayload(payload, { preserveFilters: true, fallbackToApi: false })
+  ),
 });
 
 /* ===================== 状態 ===================== */
 const VALIDATION_COLUMNS = ["ステータス", "大分類", "中分類", "タスク", "担当者", "優先度", "期限", "備考"];
-const DEFAULT_STATUSES = ['未着手', '進行中', '完了', '保留'];
-const UNSET_STATUS_LABEL = 'ステータス未設定';
 const ASSIGNEE_FILTER_ALL = '__ALL__';
 const ASSIGNEE_FILTER_UNASSIGNED = '__UNASSIGNED__';
 
-function sanitizeTaskRecord(task, fallbackIndex = 0) {
-  if (!task || typeof task !== 'object') return null;
-  const title = String(task.タスク ?? '').trim();
-  if (!title) return null;
-  const sanitized = { ...task, タスク: title };
-  const noValue = sanitized.No;
-  const noText = noValue === null || noValue === undefined ? '' : String(noValue).trim();
-  if (!noText) {
-    sanitized.No = fallbackIndex + 1;
-  }
-  return sanitized;
-}
-
-function sanitizeTaskList(rawList) {
-  if (!Array.isArray(rawList)) return [];
-  const result = [];
-  rawList.forEach(item => {
-    const sanitized = sanitizeTaskRecord(item, result.length);
-    if (sanitized) {
-      result.push(sanitized);
-    }
-  });
-  return result;
-}
-
-function normalizeStatusLabel(value) {
-  const text = String(value ?? '').trim();
-  return text || UNSET_STATUS_LABEL;
-}
-
-function denormalizeStatusLabel(value) {
-  const text = String(value ?? '').trim();
-  return text === UNSET_STATUS_LABEL ? '' : text;
-}
 const ASSIGNEE_UNASSIGNED_LABEL = '（未割り当て）';
 const CATEGORY_FILTER_ALL = '__CATEGORY_ALL__';
 const CATEGORY_FILTER_MINOR_ALL = '__CATEGORY_MINOR_ALL__';
@@ -266,20 +53,15 @@ let FILTERS = {
 let TASKS = [];
 let CURRENT_EDIT = null;
 let VALIDATIONS = {};
-
-function normalizeStatePayload(payload) {
-  if (!payload) return {};
-  if (typeof payload === 'string') {
-    try {
-      return JSON.parse(payload) || {};
-    } catch (err) {
-      console.warn('[kanban] failed to parse payload string', err);
-      return {};
-    }
-  }
-  if (typeof payload === 'object') return payload;
-  return {};
-}
+const priorityHelper = createPriorityHelper({
+  getValidations: () => VALIDATIONS,
+  defaultOptions: PRIORITY_DEFAULT_OPTIONS,
+});
+const getPriorityOptions = () => priorityHelper.getOptions();
+const getDefaultPriorityValue = () => priorityHelper.getDefaultValue();
+const applyPriorityOptions = (selectEl, currentValue, preferDefault = false) => (
+  priorityHelper.applyOptions(selectEl, currentValue, preferDefault)
+);
 
 async function applyStateFromPayload(payload, options = {}) {
   const { preserveFilters = true, fallbackToApi = true } = options;
@@ -315,19 +97,6 @@ window.__kanban_receive_update = (payload) => {
     console.error('[kanban] failed to apply pushed payload', err);
   });
 };
-
-function normalizeValidationValues(rawList) {
-  if (!Array.isArray(rawList)) return [];
-  const seen = new Set();
-  const values = [];
-  rawList.forEach(v => {
-    const text = String(v ?? '').trim();
-    if (!text || seen.has(text)) return;
-    seen.add(text);
-    values.push(text);
-  });
-  return values;
-}
 
 function applyValidationState(raw) {
   const next = {};
@@ -397,75 +166,6 @@ function applyValidationState(raw) {
   }
 
   STATUSES = ordered;
-}
-
-function getPriorityOptions() {
-  const raw = Array.isArray(VALIDATIONS['優先度']) ? VALIDATIONS['優先度'] : [];
-  const base = raw.length > 0 ? raw : PRIORITY_DEFAULT_OPTIONS;
-  const seen = new Set();
-  const list = [];
-  base.forEach(value => {
-    const text = String(value ?? '').trim();
-    if (!text || seen.has(text)) return;
-    seen.add(text);
-    list.push(text);
-  });
-  if (list.length === 0) {
-    PRIORITY_DEFAULT_OPTIONS.forEach(value => {
-      if (seen.has(value)) return;
-      seen.add(value);
-      list.push(value);
-    });
-  }
-  return list;
-}
-
-function getDefaultPriorityValue() {
-  const options = getPriorityOptions();
-  if (options.includes('中')) return '中';
-  return options[0] || '';
-}
-
-function applyPriorityOptions(selectEl, currentValue, preferDefault = false) {
-  if (!selectEl) return;
-  const normalized = currentValue === null || currentValue === undefined
-    ? ''
-    : String(currentValue).trim();
-  const options = getPriorityOptions();
-  const optionElements = [];
-  const addOption = (value, label = value) => {
-    const opt = document.createElement('option');
-    opt.value = value;
-    opt.textContent = label;
-    optionElements.push(opt);
-  };
-
-  if (!normalized && !preferDefault) {
-    addOption('', '（未設定）');
-  }
-  options.forEach(value => addOption(value));
-  if (normalized && !options.includes(normalized)) {
-    addOption(normalized);
-  }
-
-  selectEl.innerHTML = '';
-  optionElements.forEach(opt => selectEl.appendChild(opt));
-
-  const optionValues = Array.from(selectEl.options).map(opt => opt.value);
-  let selection = normalized;
-  if (!selection || !optionValues.includes(selection)) {
-    if (preferDefault) {
-      selection = getDefaultPriorityValue();
-    } else if (optionValues.includes('')) {
-      selection = '';
-    } else {
-      selection = getDefaultPriorityValue();
-    }
-  }
-  if (!optionValues.includes(selection)) {
-    selection = optionValues[0] || '';
-  }
-  selectEl.value = selection;
 }
 
 function syncFilterStatuses(prevSelection) {
