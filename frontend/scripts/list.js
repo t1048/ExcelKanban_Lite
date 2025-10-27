@@ -232,7 +232,7 @@ async function applyStateFromPayload(payload, options = {}) {
 
   applyValidationState(validationPayload);
   syncFilterStatuses(prevSelection);
-  renderBoard();
+  renderList();
   buildFiltersUI();
 }
 
@@ -358,51 +358,128 @@ async function init(force = false) {
 }
 
 /* ===================== レンダリング ===================== */
-function renderBoard() {
-  const board = document.getElementById('board');
-  board.innerHTML = '';
+function renderList() {
+  const container = document.getElementById('list-container');
+  const summary = document.getElementById('list-summary');
+  if (!container) return;
 
-  const FILTERED = getFilteredTasks();  // ← 追加
+  const filtered = getFilteredTasks();
+  const total = filtered.length;
+  const overall = Array.isArray(TASKS) ? TASKS.length : 0;
 
-  STATUSES.forEach(status => {
-    const col = document.createElement('section');
-    col.className = 'column';
-    col.dataset.status = status;
+  if (summary) {
+    const parts = [];
+    parts.push(`表示件数: ${total} 件`);
+    if (overall && overall !== total) {
+      parts.push(`全体: ${overall} 件`);
+    }
+    summary.textContent = parts.join(' / ');
+  }
 
-    const header = document.createElement('div');
-    header.className = 'column-header';
-    const title = document.createElement('div');
-    title.className = 'column-title';
-    title.textContent = status;
-    const count = document.createElement('div');
-    count.className = 'column-count';
-    // ↓ 絞り込み済みから件数を出す
-    count.textContent = `${FILTERED.filter(t => t.ステータス === status).length} 件`;
+  container.innerHTML = '';
 
-    header.appendChild(title);
-    header.appendChild(count);
+  if (filtered.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'empty-message';
+    empty.textContent = '該当するタスクはありません。';
+    container.appendChild(empty);
+    updateDueIndicators(filtered);
+    return;
+  }
 
-    const body = document.createElement('div');
-    body.className = 'column-body';
-    const drop = document.createElement('div');
-    drop.className = 'dropzone';
-    drop.addEventListener('dragover', e => { e.preventDefault(); drop.classList.add('dragover'); });
-    drop.addEventListener('dragleave', () => drop.classList.remove('dragover'));
-    drop.addEventListener('drop', e => onDropCard(e, status, drop));
+  const statusOrder = new Map();
+  STATUSES.forEach((s, idx) => { statusOrder.set(s, idx); });
 
-    // ↓ 絞り込み済みから、その列のカードを描画
-    FILTERED
-      .filter(t => t.ステータス === status)
-      .sort((a, b) => comparePriorityValues(a.優先度, b.優先度) || (a.No || 0) - (b.No || 0))
-      .forEach(task => drop.appendChild(renderCard(task)));
+  const table = document.createElement('table');
+  table.className = 'task-list';
 
-    body.appendChild(drop);
-    col.appendChild(header);
-    col.appendChild(body);
-    board.appendChild(col);
-  });
+  const thead = document.createElement('thead');
+  thead.innerHTML = `
+    <tr>
+      <th style="width:70px;">No</th>
+      <th style="width:160px;">ステータス</th>
+      <th>タスク</th>
+      <th style="width:160px;">担当者</th>
+      <th style="width:140px;">優先度</th>
+      <th style="width:160px;">期限</th>
+      <th>備考</th>
+    </tr>
+  `;
+  table.appendChild(thead);
 
-  updateDueIndicators(FILTERED);
+  const tbody = document.createElement('tbody');
+
+  filtered
+    .slice()
+    .sort((a, b) => {
+      const sa = statusOrder.has(a.ステータス) ? statusOrder.get(a.ステータス) : 999;
+      const sb = statusOrder.has(b.ステータス) ? statusOrder.get(b.ステータス) : 999;
+      if (sa !== sb) return sa - sb;
+      const pri = comparePriorityValues(a.優先度, b.優先度);
+      if (pri !== 0) return pri;
+      return (a.No || 0) - (b.No || 0);
+    })
+    .forEach(task => {
+      const tr = document.createElement('tr');
+      tr.dataset.no = String(task.No || '');
+      tr.addEventListener('dblclick', () => openEdit(task.No));
+
+      const noTd = document.createElement('td');
+      noTd.textContent = task.No ? `#${task.No}` : '';
+      tr.appendChild(noTd);
+
+      const statusTd = document.createElement('td');
+      const statusPill = document.createElement('span');
+      statusPill.className = 'status-pill';
+      statusPill.textContent = task.ステータス || '';
+      statusTd.appendChild(statusPill);
+      tr.appendChild(statusTd);
+
+      const titleTd = document.createElement('td');
+      titleTd.textContent = task.タスク || '(無題)';
+      tr.appendChild(titleTd);
+
+      const assigneeTd = document.createElement('td');
+      assigneeTd.textContent = (task.担当者 || '').trim();
+      tr.appendChild(assigneeTd);
+
+      const priorityTd = document.createElement('td');
+      if (task.優先度 !== undefined && task.優先度 !== null && String(task.優先度).trim() !== '') {
+        const pill = document.createElement('span');
+        pill.className = 'priority-pill';
+        pill.textContent = `優先度: ${task.優先度}`;
+        priorityTd.appendChild(pill);
+      }
+      tr.appendChild(priorityTd);
+
+      const dueTd = document.createElement('td');
+      if (task.期限) {
+        const due = document.createElement('span');
+        due.className = 'due-badge';
+        let label = task.期限;
+        const state = getDueState(task);
+        if (state) {
+          if (state.level === 'overdue') due.classList.add('due-overdue');
+          if (state.level === 'warning') due.classList.add('due-warning');
+          label += `（${state.label}）`;
+        }
+        due.textContent = label;
+        dueTd.appendChild(due);
+      }
+      tr.appendChild(dueTd);
+
+      const notesTd = document.createElement('td');
+      notesTd.className = 'notes-cell';
+      notesTd.textContent = task.備考 || '';
+      tr.appendChild(notesTd);
+
+      tbody.appendChild(tr);
+    });
+
+  table.appendChild(tbody);
+  container.appendChild(table);
+
+  updateDueIndicators(filtered);
 }
 
 
@@ -427,7 +504,7 @@ function buildFiltersUI() {
     cb.type = 'checkbox'; cb.id = id; cb.value = s; cb.checked = FILTERS.statuses.has(s);
     cb.addEventListener('change', () => {
       if (cb.checked) FILTERS.statuses.add(s); else FILTERS.statuses.delete(s);
-      renderBoard();
+      renderList();
     });
     const span = document.createElement('span'); span.textContent = s;
     lbl.appendChild(cb); lbl.appendChild(span);
@@ -450,14 +527,14 @@ function buildFiltersUI() {
   } else {
     sel.value = ASSIGNEE_FILTER_ALL;
   }
-  sel.onchange = () => { FILTERS.assignee = sel.value; renderBoard(); };
+  sel.onchange = () => { FILTERS.assignee = sel.value; renderList(); };
 
   // キーワード
   const keywordEl = document.getElementById('flt-keyword');
   keywordEl.value = FILTERS.keyword || '';
   keywordEl.oninput = () => {
     FILTERS.keyword = keywordEl.value;
-    renderBoard();
+    renderList();
   };
 
   // 期限（モード＆日付）
@@ -493,15 +570,15 @@ function buildFiltersUI() {
   };
   updateVisibility();
 
-  modeSel.onchange = () => { FILTERS.date.mode = modeSel.value; updateVisibility(); renderBoard(); };
-  fromEl.onchange = () => { FILTERS.date.from = fromEl.value; renderBoard(); };
-  toEl.onchange = () => { FILTERS.date.to = toEl.value; renderBoard(); };
+  modeSel.onchange = () => { FILTERS.date.mode = modeSel.value; updateVisibility(); renderList(); };
+  fromEl.onchange = () => { FILTERS.date.from = fromEl.value; renderList(); };
+  toEl.onchange = () => { FILTERS.date.to = toEl.value; renderList(); };
 
   // 解除ボタン
   document.getElementById('btn-clear-filters').onclick = () => {
     FILTERS = { assignee: ASSIGNEE_FILTER_ALL, statuses: new Set(STATUSES), keyword: '', date: { mode: 'none', from: '', to: '' } };
     buildFiltersUI();
-    renderBoard();
+    renderList();
   };
 }
 
@@ -537,71 +614,6 @@ function comparePriorityValues(a, b) {
   const kb = prioritySortKey(b);
   if (ka.weight !== kb.weight) return ka.weight - kb.weight;
   return ka.label.localeCompare(kb.label, 'ja');
-}
-
-function renderCard(task) {
-  const el = document.createElement('article');
-  el.className = 'card';
-  el.draggable = true;
-  el.dataset.no = task.No;
-
-  const dueState = getDueState(task);
-  if (dueState?.level === 'overdue') {
-    el.classList.add('due-overdue');
-  } else if (dueState?.level === 'warning') {
-    el.classList.add('due-warning');
-  }
-
-  el.addEventListener('dragstart', e => {
-    e.dataTransfer.setData('text/plain', String(task.No));
-    e.dataTransfer.dropEffect = 'move';
-  });
-
-  el.addEventListener('dblclick', () => openEdit(task.No));
-
-  const header = document.createElement('div');
-  header.className = 'card-header';
-  const title = document.createElement('div');
-  title.className = 'card-title';
-  title.textContent = task.タスク || '(無題)';
-  const no = document.createElement('div');
-  no.className = 'card-no';
-  no.textContent = `#${task.No}`;
-  header.appendChild(title);
-  header.appendChild(no);
-
-  const meta = document.createElement('div');
-  meta.className = 'card-meta';
-  if (task.優先度 !== undefined && task.優先度 !== null && String(task.優先度).trim() !== '') {
-    const bp = document.createElement('span');
-    bp.className = 'badge badge-priority';
-    bp.textContent = `優先度: ${task.優先度}`;
-    meta.appendChild(bp);
-  }
-  if (task.担当者) {
-    const b1 = document.createElement('span'); b1.className = 'badge badge-assignee'; b1.textContent = task.担当者; meta.appendChild(b1);
-  }
-  if (task.期限) {
-    const b2 = document.createElement('span');
-    b2.className = 'badge badge-date';
-    let dueText = task.期限;
-    if (dueState) {
-      dueText += `（${dueState.label}）`;
-      if (dueState.level === 'overdue') b2.classList.add('due-overdue');
-      if (dueState.level === 'warning') b2.classList.add('due-warning');
-    }
-    b2.textContent = dueText;
-    meta.appendChild(b2);
-  }
-
-  const notes = document.createElement('div');
-  notes.className = 'card-notes';
-  notes.textContent = task.備考 || '';
-
-  el.appendChild(header);
-  el.appendChild(meta);
-  el.appendChild(notes);
-  return el;
 }
 
 function updateDueIndicators(tasks) {
@@ -653,23 +665,6 @@ function updateDueIndicators(tasks) {
   container.classList.toggle('active', hasAlerts);
 }
 
-/* ===================== DnD ===================== */
-async function onDropCard(e, newStatus, dropzone) {
-  e.preventDefault();
-  dropzone.classList.remove('dragover');
-  const no = parseInt(e.dataTransfer.getData('text/plain'), 10);
-  if (!no) return;
-
-  try {
-    await api.move_task(no, newStatus);
-    const idx = TASKS.findIndex(t => t.No === no);
-    if (idx >= 0) TASKS[idx].ステータス = newStatus;
-    renderBoard();
-  } catch (err) {
-    alert('移動に失敗しました: ' + (err?.message || err));
-  }
-}
-
 /* ===================== ツールバー ===================== */
 function wireToolbar() {
   document.getElementById('btn-add').addEventListener('click', () => openCreate());
@@ -690,19 +685,6 @@ function wireToolbar() {
       alert('再読込に失敗: ' + (e?.message || e));
     }
   });
-  const timelineBtn = document.getElementById('btn-timeline');
-  if (timelineBtn) {
-    timelineBtn.addEventListener('click', () => {
-      window.location.href = 'timeline.html';
-    });
-  }
-
-  const listBtn = document.getElementById('btn-list');
-  if (listBtn) {
-    listBtn.addEventListener('click', () => {
-      window.location.href = 'list.html';
-    });
-  }
 }
 
 /* ===================== 入力規則モーダル ===================== */
@@ -766,7 +748,7 @@ function openValidationModal() {
         }
         syncFilterStatuses(prevSelection);
         closeValidationModal();
-        renderBoard();
+        renderList();
         buildFiltersUI();
       } catch (err) {
         alert('入力規則の保存に失敗: ' + (err?.message || err));
@@ -958,7 +940,7 @@ function openModal(task, { mode }) {
           TASKS = TASKS.filter(x => x.No !== CURRENT_EDIT).map((task, idx) => ({ ...task, No: idx + 1 }));
         }
         CURRENT_EDIT = null;
-        closeModal(); renderBoard(); buildFiltersUI();
+        closeModal(); renderList(); buildFiltersUI();
       } else {
         alert('削除できませんでした');
       }
@@ -989,7 +971,7 @@ function openModal(task, { mode }) {
         const i = TASKS.findIndex(x => x.No === no);
         if (i >= 0) TASKS[i] = updated;
       }
-      closeModal(); renderBoard(); buildFiltersUI();
+      closeModal(); renderList(); buildFiltersUI();
     } catch (err) {
       alert('保存に失敗: ' + (err?.message || err));
     }
