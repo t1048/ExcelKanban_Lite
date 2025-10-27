@@ -51,29 +51,6 @@ setupRuntime({
 ready(() => {
   wireControls();
 });
-      if (!located) throw new Error('指定したタスクが見つかりません');
-      const updated = normalizeTask({ ...located.record, ...payload });
-      tasks[located.index] = updated;
-      return { ...cloneTask(updated), No: located.index + 1 };
-    },
-    async delete_task(no) {
-      const located = locateTask(no);
-      if (!located) return false;
-      tasks.splice(located.index, 1);
-      return true;
-    },
-    async reload_from_excel() {
-      return {
-        tasks: withSequentialNo(),
-        statuses: Array.from(statusSet),
-        validations: { ...validations }
-      };
-    },
-    async save_excel() {
-      return 'mock-data.xlsx';
-    }
-  };
-}
 
 async function init(force = false) {
   if (!api) return;
