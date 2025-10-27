@@ -48,9 +48,9 @@ def _to_iso_date_str(value) -> str:
     if pd.isna(value):
         return ""
     if isinstance(value, (dt.date, dt.datetime, pd.Timestamp)):
-        return pd.to_datetime(value).strftime("%Y-%m-%d")
+        return pd.to_datetime(value).strftime("%Y/%m/%d")
     try:
-        return pd.to_datetime(str(value)).strftime("%Y-%m-%d")
+        return pd.to_datetime(str(value)).strftime("%Y/%m/%d")
     except Exception:
         return str(value)
 
@@ -486,6 +486,21 @@ class TaskStore:
                     for col_name, value in zip(TASK_COLUMNS, row):
                         values.append(self._to_excel_value(col_name, value))
                     ws.append(values)
+
+                try:
+                    due_col_idx = TASK_COLUMNS.index("期限") + 1
+                except ValueError:
+                    due_col_idx = None
+
+                if due_col_idx is not None and ws.max_row >= 2:
+                    for cell in ws.iter_rows(
+                        min_row=2,
+                        max_row=ws.max_row,
+                        min_col=due_col_idx,
+                        max_col=due_col_idx,
+                    ):
+                        for target in cell:
+                            target.number_format = "yyyy/mm/dd"
 
                 if ws.data_validations is not None:
                     ws.data_validations.dataValidation = []
