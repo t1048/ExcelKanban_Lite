@@ -155,6 +155,11 @@ class TaskStore:
 
             df = df.dropna(how="all", subset=TASK_COLUMNS).reset_index(drop=True)
 
+            df["タスク"] = df["タスク"].apply(
+                lambda v: "" if pd.isna(v) else str(v).strip()
+            )
+            df = df[df["タスク"] != ""].reset_index(drop=True)
+
             if "期限" in df.columns:
                 df["期限"] = pd.to_datetime(df["期限"], errors="coerce").dt.date
 
@@ -366,6 +371,9 @@ class TaskStore:
             due = _from_iso_date_str(task.get("期限", ""))
             priority = _normalize_priority(task.get("優先度"))
 
+            if not title:
+                raise ValueError("タスクは必須項目です。")
+
             row = {
                 "ステータス": status,
                 "大分類": major,
@@ -395,7 +403,10 @@ class TaskStore:
             if "中分類" in patch:
                 self._df.at[row_index, "中分類"] = str(patch["中分類"] or "").strip()
             if "タスク" in patch:
-                self._df.at[row_index, "タスク"] = str(patch["タスク"] or "").strip()
+                title = str(patch["タスク"] or "").strip()
+                if not title:
+                    raise ValueError("タスクは必須項目です。")
+                self._df.at[row_index, "タスク"] = title
             if "担当者" in patch:
                 self._df.at[row_index, "担当者"] = str(patch["担当者"] or "").strip()
             if "優先度" in patch:
