@@ -603,12 +603,6 @@ function applyValidationState(raw) {
   VALIDATIONS = next;
 }
 
-function getDefaultPriorityValue() {
-  const options = getPriorityOptions();
-  if (options.includes('中')) return '中';
-  return options[0] || '';
-}
-
 function openEdit(no) {
   const task = TASKS.find(t => t.No === no);
   if (!task) return;
