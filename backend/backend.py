@@ -454,7 +454,7 @@ class TaskStore:
                         type="list",
                         formula1=formula,
                         allow_blank=True,
-                        showDropDown=True,
+                        showDropDown=False,
                     )
                     dv.add(f"${col_letter}$2:${col_letter}$1048576")
                     ws.add_data_validation(dv)

@@ -3,32 +3,21 @@
 
 <head>
   <meta charset="UTF-8" />
-  <meta http-equiv="X-UA-Compatible" content="IE=edge" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>タスク・カンバン</title>
+  <title>タスク・リスト</title>
   <style>
     :root {
       --bg: #0f172a;
-      /* slate-900 */
-      --panel: #111827;
-      /* gray-900 */
-      --col: #0b1220;
-      /* deep panel */
-      --card: #111827;
-      /* gray-900 */
-      --accent: #60a5fa;
-      /* blue-400 */
-      --accent-2: #34d399;
-      /* emerald-400 */
-      --text: #e5e7eb;
-      /* gray-200 */
-      --muted: #9ca3af;
-      /* gray-400 */
-      --danger: #ef4444;
-      /* red-500 */
-      --yellow: #f59e0b;
-      /* amber-500 */
-      --shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+      --panel: rgba(15, 23, 42, 0.88);
+      --table: rgba(15, 23, 42, 0.72);
+      --text: #f8fafc;
+      --muted: #94a3b8;
+      --accent: #38bdf8;
+      --accent-2: #22c55e;
+      --danger: #f87171;
+      --warning: #facc15;
+      --border: rgba(148, 163, 184, 0.24);
+      --shadow: 0 10px 36px rgba(8, 15, 40, 0.45);
       --radius: 14px;
     }
 
@@ -36,22 +25,27 @@
     body {
       height: 100%;
       margin: 0;
-      background: radial-gradient(1200px 800px at 20% 0%, #0b1840, #0f172a 60%);
+      background: radial-gradient(1400px 900px at 20% -10%, #132047, #0f172a 55%);
       color: var(--text);
-      font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Hiragino Sans", "Noto Sans JP", "Yu Gothic UI", "Yu Gothic", "Meiryo", sans-serif;
+      font-family: system-ui, -apple-system, "Segoe UI", "Hiragino Sans", "Noto Sans JP", "Yu Gothic", sans-serif;
+    }
+
+    a {
+      color: inherit;
+      text-decoration: none;
     }
 
     .toolbar {
       position: sticky;
       top: 0;
       display: flex;
-      gap: 8px;
+      gap: 12px;
       align-items: center;
-      padding: 12px 16px;
-      background: rgba(17, 24, 39, 0.7);
-      backdrop-filter: blur(8px);
+      padding: 14px 18px;
+      background: rgba(15, 23, 42, 0.78);
+      backdrop-filter: blur(10px);
       box-shadow: var(--shadow);
-      z-index: 50;
+      z-index: 100;
     }
 
     .toolbar .title {
@@ -66,175 +60,45 @@
       cursor: pointer;
       padding: 8px 12px;
       border-radius: 10px;
-      background: #0b2a52;
-      color: #cfe6ff;
-      box-shadow: var(--shadow);
+      background: rgba(56, 189, 248, 0.15);
+      color: #e0f2fe;
+      border: 1px solid rgba(56, 189, 248, 0.35);
       transition: transform .07s ease, background .2s ease;
     }
 
     .btn:hover {
       transform: translateY(-1px);
+      background: rgba(56, 189, 248, 0.25);
     }
 
     .btn-primary {
-      background: linear-gradient(135deg, #1553b8, #0ea5e9);
-      color: white;
+      background: linear-gradient(135deg, #2563eb, #0ea5e9);
+      color: #f8fafc;
+      border-color: transparent;
     }
 
     .btn-success {
       background: linear-gradient(135deg, #0e9f6e, #22c55e);
       color: white;
+      border-color: transparent;
     }
 
     .btn-danger {
       background: linear-gradient(135deg, #ef4444, #f97316);
       color: white;
+      border-color: transparent;
     }
 
     .btn-ghost {
       background: transparent;
       color: var(--muted);
-      box-shadow: none;
+      border: 1px solid rgba(148, 163, 184, 0.35);
     }
 
     .hint {
       color: var(--muted);
       font-size: 13px;
       margin-left: 8px;
-    }
-
-    .board {
-      display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-      gap: 16px;
-      padding: 16px;
-    }
-
-    .column {
-      display: flex;
-      flex-direction: column;
-      background: linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.02));
-      border: 1px solid rgba(255, 255, 255, 0.06);
-      border-radius: var(--radius);
-      box-shadow: var(--shadow);
-      min-height: 220px;
-      overflow: hidden;
-    }
-
-    .column-header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      padding: 12px 14px;
-      background: rgba(255, 255, 255, 0.03);
-      border-bottom: 1px solid rgba(255, 255, 255, 0.06);
-    }
-
-    .column-title {
-      font-weight: 600;
-    }
-
-    .column-count {
-      color: var(--muted);
-      font-size: 12px;
-    }
-
-    .column-body {
-      padding: 12px;
-      gap: 10px;
-      display: flex;
-      flex-direction: column;
-      min-height: 150px;
-      flex: 1;
-    }
-
-    .dropzone {
-      border: 2px dashed transparent;
-      border-radius: 12px;
-      padding: 12px;
-      min-height: 180px;
-      display: flex;
-      flex-direction: column;
-      gap: 10px;
-      transition: border-color .15s ease, background .15s ease;
-      box-sizing: border-box;
-      flex: 1;
-    }
-
-    .dropzone.dragover {
-      border-color: var(--accent);
-      background: rgba(96, 165, 250, 0.07);
-    }
-
-    .card {
-      background: linear-gradient(180deg, #111827, #0d1424);
-      border: 1px solid rgba(255, 255, 255, 0.06);
-      border-radius: 12px;
-      padding: 12px;
-      box-shadow: var(--shadow);
-      cursor: grab;
-    }
-
-    .card:active {
-      cursor: grabbing;
-    }
-
-    .card-header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 6px;
-    }
-
-    .card-no {
-      font-size: 12px;
-      color: var(--muted);
-    }
-
-    .card-title {
-      font-weight: 600;
-    }
-
-    .badge {
-      font-size: 11px;
-      padding: 3px 8px;
-      border-radius: 999px;
-      border: 1px solid rgba(255, 255, 255, 0.12);
-    }
-
-    .badge-assignee {
-      color: #c4f5d2;
-      background: rgba(52, 211, 153, 0.12);
-    }
-
-    .badge-date {
-      color: #fde68a;
-      background: rgba(245, 158, 11, 0.12);
-      display: inline-flex;
-      align-items: center;
-      gap: 4px;
-    }
-
-    .card.due-warning {
-      border-color: rgba(245, 158, 11, 0.6);
-      box-shadow: 0 0 0 1px rgba(245, 158, 11, 0.35), var(--shadow);
-    }
-
-    .card.due-overdue {
-      border-color: rgba(239, 68, 68, 0.7);
-      box-shadow: 0 0 0 1px rgba(239, 68, 68, 0.4), var(--shadow);
-    }
-
-    .badge-date.due-warning {
-      color: #fef3c7;
-      background: rgba(245, 158, 11, 0.2);
-      border-color: rgba(245, 158, 11, 0.4);
-    }
-
-    .badge-date.due-overdue {
-      color: #fecaca;
-      background: rgba(239, 68, 68, 0.22);
-      border-color: rgba(239, 68, 68, 0.5);
     }
 
     .toolbar-due {
@@ -272,7 +136,7 @@
     .due-indicator.due-overdue {
       color: #fecaca;
       background: rgba(239, 68, 68, 0.18);
-      border-color: rgba(239, 68, 68, 0.4);
+      border-color: rgba(239, 68, 68, 0.38);
     }
 
     .due-indicator.due-warning {
@@ -291,31 +155,12 @@
       box-shadow: var(--shadow);
     }
 
-    .badge-priority {
-      color: #fca5a5;
-      background: rgba(239, 68, 68, 0.15);
-    }
-
-    .card-meta {
-      display: flex;
-      gap: 6px;
-      margin: 6px 0 8px;
-      flex-wrap: wrap;
-    }
-
-    .card-notes {
-      font-size: 12px;
-      color: var(--muted);
-      white-space: pre-wrap;
-    }
-
-    /* ==== Filters ==== */
     .filters-bar {
       display: flex;
       gap: 14px;
       align-items: flex-end;
       flex-wrap: wrap;
-      padding: 8px 16px 0;
+      padding: 16px 18px 0;
       margin: 0 0 8px;
     }
 
@@ -334,9 +179,9 @@
     .filter select,
     .filter input[type="date"],
     .filter input[type="text"] {
-      background: #0a1020;
+      background: rgba(15, 23, 42, 0.9);
       color: var(--text);
-      border: 1px solid rgba(255, 255, 255, 0.12);
+      border: 1px solid rgba(148, 163, 184, 0.4);
       border-radius: 10px;
       padding: 6px 10px;
     }
@@ -352,10 +197,10 @@
       align-items: center;
       gap: 6px;
       font-size: 13px;
-      background: #0a1020;
+      background: rgba(15, 23, 42, 0.9);
       padding: 6px 10px;
       border-radius: 999px;
-      border: 1px solid rgba(255, 255, 255, 0.12);
+      border: 1px solid rgba(148, 163, 184, 0.4);
       cursor: pointer;
     }
 
@@ -365,7 +210,112 @@
       gap: 8px;
     }
 
-    /* モーダル */
+    .list-wrapper {
+      padding: 0 18px 18px;
+    }
+
+    .list-panel {
+      background: var(--panel);
+      border-radius: 18px;
+      border: 1px solid var(--border);
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+
+    table.task-list {
+      width: 100%;
+      border-collapse: separate;
+      border-spacing: 0;
+      font-size: 13px;
+      background: var(--table);
+    }
+
+    table.task-list thead th {
+      position: sticky;
+      top: 0;
+      background: rgba(15, 23, 42, 0.92);
+      backdrop-filter: blur(6px);
+      text-align: left;
+      padding: 12px 14px;
+      border-bottom: 1px solid rgba(148, 163, 184, 0.35);
+      font-weight: 600;
+      color: #e2e8f0;
+    }
+
+    table.task-list tbody td {
+      padding: 12px 14px;
+      border-bottom: 1px solid rgba(148, 163, 184, 0.15);
+      vertical-align: top;
+    }
+
+    table.task-list td.notes-cell {
+      white-space: pre-wrap;
+      color: var(--muted);
+    }
+
+    table.task-list tbody tr:last-child td {
+      border-bottom: none;
+    }
+
+    table.task-list tbody tr:hover {
+      background: rgba(56, 189, 248, 0.08);
+    }
+
+    .status-pill {
+      display: inline-flex;
+      align-items: center;
+      padding: 3px 10px;
+      border-radius: 999px;
+      border: 1px solid rgba(148, 163, 184, 0.4);
+      font-size: 12px;
+    }
+
+    .priority-pill {
+      display: inline-flex;
+      align-items: center;
+      padding: 3px 10px;
+      border-radius: 999px;
+      background: rgba(239, 68, 68, 0.15);
+      border: 1px solid rgba(239, 68, 68, 0.35);
+      color: #fca5a5;
+      font-size: 12px;
+    }
+
+    .due-badge {
+      display: inline-flex;
+      align-items: center;
+      padding: 3px 10px;
+      border-radius: 999px;
+      border: 1px solid rgba(148, 163, 184, 0.35);
+      background: rgba(148, 163, 184, 0.15);
+      font-size: 12px;
+      gap: 6px;
+    }
+
+    .due-badge.due-overdue {
+      color: #fecaca;
+      background: rgba(239, 68, 68, 0.18);
+      border-color: rgba(239, 68, 68, 0.4);
+    }
+
+    .due-badge.due-warning {
+      color: #fef3c7;
+      background: rgba(245, 158, 11, 0.2);
+      border-color: rgba(245, 158, 11, 0.45);
+    }
+
+    .list-summary {
+      padding: 14px 18px 0;
+      font-size: 13px;
+      color: var(--muted);
+    }
+
+    .footer-hint {
+      padding: 0 18px 24px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+
     .modal {
       position: fixed;
       inset: 0;
@@ -373,7 +323,7 @@
       align-items: center;
       justify-content: center;
       background: rgba(0, 0, 0, 0.45);
-      z-index: 100;
+      z-index: 200;
     }
 
     .modal.open {
@@ -398,19 +348,20 @@
 
     .modal-header {
       display: flex;
-      justify-content: space-between;
       align-items: center;
-      margin-bottom: 8px;
+      gap: 12px;
+      margin-bottom: 12px;
     }
 
     .modal-title {
-      font-weight: 700;
+      font-size: 18px;
+      font-weight: 600;
     }
 
     .form {
       display: grid;
-      gap: 10px;
-      grid-template-columns: 1fr 1fr;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 12px 16px;
     }
 
     .form .row {
@@ -420,41 +371,40 @@
     }
 
     .form label {
-      font-size: 12px;
+      font-size: 13px;
       color: var(--muted);
     }
 
-    .form input[type="text"],
-    .form input[type="date"],
-    .form select,
-    .form textarea {
-      background: #0a1020;
-      color: var(--text);
-      border: 1px solid rgba(255, 255, 255, 0.12);
+    .form input,
+    .form textarea,
+    .form select {
+      background: rgba(15, 23, 42, 0.92);
+      border: 1px solid rgba(148, 163, 184, 0.4);
       border-radius: 10px;
+      color: var(--text);
       padding: 8px 10px;
+      font-size: 14px;
     }
 
-    .form textarea {
-      min-height: 80px;
-      grid-column: 1 / -1;
+    textarea {
+      min-height: 120px;
+      resize: vertical;
     }
 
     .modal-actions {
       display: flex;
+      align-items: center;
       gap: 10px;
-      justify-content: flex-end;
-      margin-top: 10px;
+      margin-top: 16px;
     }
 
     .validation-editor {
-      display: flex;
-      flex-direction: column;
+      flex: 1;
+      overflow: auto;
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
       gap: 12px;
-      margin-top: 12px;
-      overflow-y: auto;
-      padding-right: 4px;
-      max-height: 360px;
+      padding: 8px 0;
     }
 
     .validation-item {
@@ -464,48 +414,61 @@
     }
 
     .validation-item textarea {
-      min-height: 96px;
+      min-height: 160px;
       resize: vertical;
     }
 
     .validation-note {
-      font-size: 12px;
+      font-size: 13px;
+      color: var(--muted);
+      margin-bottom: 10px;
+    }
+
+    .empty-message {
+      padding: 24px;
+      text-align: center;
       color: var(--muted);
     }
 
-    .danger {
-      color: #ffd6d6;
-    }
+    @media (max-width: 720px) {
+      .toolbar {
+        flex-wrap: wrap;
+      }
 
-    .footer-hint {
-      color: var(--muted);
-      font-size: 12px;
-      padding: 0 16px 10px;
+      .filters-bar {
+        padding: 12px 12px 0;
+      }
+
+      .list-wrapper {
+        padding: 0 12px 12px;
+      }
+
+      table.task-list thead th,
+      table.task-list tbody td {
+        padding: 10px 12px;
+      }
     }
   </style>
 </head>
 
 <body>
   <div class="toolbar">
-    <div class="title">タスク・カンバン</div>
-    <div class="toolbar-due" id="toolbar-due" aria-live="polite">
+    <div class="title">タスク・リスト</div>
+    <div id="toolbar-due" class="toolbar-due" aria-live="polite">
       <div class="toolbar-due-badges">
-        <span id="due-overdue-count" class="due-indicator due-overdue" hidden>期限超過 <span class="count">0</span></span>
-        <span id="due-warning-count" class="due-indicator due-warning" hidden>期限間近 <span class="count">0</span></span>
+        <span id="due-overdue-count" class="due-indicator due-overdue" hidden>期限超過 <span class="count">0</span> 件</span>
+        <span id="due-warning-count" class="due-indicator due-warning" hidden>期限間近 <span class="count">0</span> 件</span>
       </div>
       <div id="due-toast" class="due-toast" hidden></div>
     </div>
-    <button id="btn-add" class="btn btn-primary">＋ 追加</button>
-    <button id="btn-save" class="btn btn-success">保存</button>
+    <button id="btn-add" class="btn btn-primary">カード追加</button>
+    <button id="btn-save" class="btn btn-success">Excelへ保存</button>
     <button id="btn-validations" class="btn">入力規則</button>
     <button id="btn-reload" class="btn">再読込</button>
-    <button id="btn-list" class="btn">リスト表示</button>
-    <button id="btn-timeline" class="btn">タイムライン</button>
-    <span class="hint">ドラッグ＆ドロップで列に移動できます</span>
+    <a href="index.html" class="btn btn-ghost">カンバン表示</a>
+    <a href="timeline.html" class="btn btn-ghost">タイムライン</a>
   </div>
 
-
-  <!-- フィルター -->
   <div class="filters-bar" id="filters-bar">
     <div class="filter">
       <label for="flt-assignee">担当者</label>
@@ -545,11 +508,16 @@
     </div>
   </div>
 
+  <div id="list-summary" class="list-summary"></div>
 
-  <div id="board" class="board" aria-live="polite"></div>
+  <div class="list-wrapper">
+    <div class="list-panel">
+      <div id="list-container" aria-live="polite"></div>
+    </div>
+  </div>
+
   <div class="footer-hint">※ 期限は YYYY-MM-DD（例: 2025-10-25）</div>
 
-  <!-- 入力規則モーダル -->
   <div id="validation-modal" class="modal" role="dialog" aria-modal="true" aria-hidden="true">
     <div class="modal-card validation-card">
       <div class="modal-header">
@@ -568,7 +536,6 @@
     </div>
   </div>
 
-  <!-- 編集モーダル -->
   <div id="modal" class="modal" role="dialog" aria-modal="true" aria-hidden="true">
     <div class="modal-card">
       <div class="modal-header">
@@ -611,7 +578,7 @@
     </div>
   </div>
 
-    <script src="../scripts/index.js"></script>
+  <script src="../scripts/list.js"></script>
 </body>
 
 </html>
