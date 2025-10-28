@@ -404,6 +404,390 @@
     };
   }
 
+  function parseISODate(value) {
+    if (!value) return null;
+    if (value instanceof Date) {
+      const time = value.getTime();
+      return Number.isNaN(time) ? null : new Date(time);
+    }
+    const text = String(value).trim();
+    if (!text) return null;
+    const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(text);
+    if (!match) return null;
+    const dt = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+    return Number.isNaN(dt.getTime()) ? null : dt;
+  }
+
+  function isCompletedStatus(value) {
+    const text = String(value ?? '').trim();
+    if (!text) return false;
+    const normalized = text.toLowerCase().replace(/\s+/g, '');
+    return normalized === '完了'
+      || normalized === '完了済み'
+      || normalized === '完了済'
+      || normalized === 'done'
+      || normalized === 'completed';
+  }
+
+  function getDueState(task) {
+    if (!task || typeof task !== 'object') return null;
+    if (isCompletedStatus(task.ステータス)) return null;
+
+    const dueDate = parseISODate(task.期限 || '');
+    if (!dueDate) return null;
+
+    const due = new Date(dueDate.getTime());
+    due.setHours(0, 0, 0, 0);
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const diffDays = Math.ceil((due.getTime() - today.getTime()) / 86400000);
+
+    if (diffDays < 0) {
+      const abs = Math.abs(diffDays);
+      return {
+        level: 'overdue',
+        diff: abs,
+        label: `${abs}日超過`
+      };
+    }
+
+    if (diffDays === 0) {
+      return {
+        level: 'warning',
+        diff: 0,
+        label: '本日期限'
+      };
+    }
+
+    const label = `あと${diffDays}日`;
+    if (diffDays <= 3) {
+      return {
+        level: 'warning',
+        diff: diffDays,
+        label,
+      };
+    }
+
+    return {
+      level: 'normal',
+      diff: diffDays,
+      label,
+    };
+  }
+
+  function summarizeAssigneeWorkload(tasks, {
+    normalizeStatusLabel: normalizeStatus = (value) => {
+      const text = String(value ?? '').trim();
+      return text || UNSET_STATUS_LABEL;
+    },
+    unassignedKey = '__UNASSIGNED__',
+    unassignedLabel = '（未割り当て）',
+    getDueState: dueEvaluator = null,
+  } = {}) {
+    const list = Array.isArray(tasks) ? tasks : [];
+    const map = new Map();
+    const assignees = [];
+    const statusSet = new Set();
+
+    list.forEach(task => {
+      if (!task || typeof task !== 'object') return;
+      const rawAssignee = String(task.担当者 ?? '').trim();
+      const key = rawAssignee || unassignedKey;
+      const label = rawAssignee || unassignedLabel;
+
+      let entry = map.get(key);
+      if (!entry) {
+        entry = {
+          key,
+          label,
+          total: 0,
+          statusCounts: Object.create(null),
+          due: { warning: 0, overdue: 0 },
+        };
+        map.set(key, entry);
+        assignees.push(entry);
+      }
+
+      entry.total += 1;
+
+      const status = normalizeStatus(task.ステータス);
+      const statusKey = String(status ?? '').trim() || UNSET_STATUS_LABEL;
+      statusSet.add(statusKey);
+      entry.statusCounts[statusKey] = (entry.statusCounts[statusKey] || 0) + 1;
+
+      if (typeof dueEvaluator === 'function') {
+        const state = dueEvaluator(task);
+        if (state?.level === 'overdue') {
+          entry.due.overdue += 1;
+        } else if (state?.level === 'warning') {
+          entry.due.warning += 1;
+        }
+      }
+    });
+
+    assignees.sort((a, b) => {
+      if (b.total !== a.total) return b.total - a.total;
+      return a.label.localeCompare(b.label, 'ja');
+    });
+
+    return {
+      assignees,
+      statuses: Array.from(statusSet),
+    };
+  }
+
+  function createWorkloadSummary({
+    container,
+    bodySelector = '.workload-summary-body',
+    metaSelector = '.workload-summary-meta',
+    toggleSelector = '.workload-toggle',
+    normalizeStatusLabel: normalizeStatus = (value) => {
+      const text = String(value ?? '').trim();
+      return text || UNSET_STATUS_LABEL;
+    },
+    unassignedKey = '__UNASSIGNED__',
+    unassignedLabel = '（未割り当て）',
+    allKey = '__ALL__',
+    getStatuses = () => [],
+    getActiveAssignee = () => null,
+    getDueState: dueEvaluator = null,
+    highlightPredicate = (entry) => (entry?.due?.overdue ?? 0) > 0,
+    onSelectAssignee = null,
+  } = {}) {
+    if (!container) {
+      return { update() {} };
+    }
+
+    const body = container.querySelector(bodySelector) || container;
+    const metaEl = container.querySelector(metaSelector) || null;
+    const toggleEl = container.querySelector(toggleSelector) || null;
+
+    let metaTextNode = null;
+    let resetButton = null;
+    if (metaEl) {
+      metaEl.innerHTML = '';
+      metaTextNode = document.createElement('span');
+      metaTextNode.className = 'workload-summary-text';
+      metaEl.appendChild(metaTextNode);
+      if (typeof onSelectAssignee === 'function') {
+        resetButton = document.createElement('button');
+        resetButton.type = 'button';
+        resetButton.className = 'assignee-reset';
+        resetButton.dataset.assigneeFilter = allKey;
+        resetButton.textContent = '全員を表示';
+        metaEl.appendChild(resetButton);
+      }
+    }
+
+    const USER_OVERRIDE_ATTR = 'data-workload-user-toggle';
+
+    const setCollapsed = (collapsed) => {
+      if (collapsed) {
+        container.classList.add('is-collapsed');
+      } else {
+        container.classList.remove('is-collapsed');
+      }
+      if (toggleEl) {
+        toggleEl.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+      }
+    };
+
+    if (toggleEl) {
+      toggleEl.addEventListener('click', () => {
+        const collapsed = !container.classList.contains('is-collapsed');
+        setCollapsed(collapsed);
+        container.setAttribute(USER_OVERRIDE_ATTR, '1');
+      });
+    }
+
+    const mediaQuery = typeof window.matchMedia === 'function'
+      ? window.matchMedia('(max-width: 900px)')
+      : null;
+
+    const applyMediaState = () => {
+      if (!mediaQuery) return;
+      if (mediaQuery.matches) {
+        container.classList.add('is-collapsible');
+        if (!container.hasAttribute(USER_OVERRIDE_ATTR)) {
+          setCollapsed(true);
+        }
+      } else {
+        container.classList.remove('is-collapsible');
+        container.removeAttribute(USER_OVERRIDE_ATTR);
+        setCollapsed(false);
+      }
+    };
+
+    if (mediaQuery) {
+      if (typeof mediaQuery.addEventListener === 'function') {
+        mediaQuery.addEventListener('change', applyMediaState);
+      } else if (typeof mediaQuery.addListener === 'function') {
+        mediaQuery.addListener(applyMediaState);
+      }
+      applyMediaState();
+    }
+
+    if (typeof onSelectAssignee === 'function') {
+      container.addEventListener('click', (ev) => {
+        const target = ev.target.closest('[data-assignee-filter]');
+        if (!target || !container.contains(target)) return;
+        ev.preventDefault();
+        const value = target.dataset.assigneeFilter;
+        onSelectAssignee(value);
+      });
+    }
+
+    const highlightFn = typeof highlightPredicate === 'function'
+      ? highlightPredicate
+      : () => false;
+
+    const update = (tasks, meta = {}) => {
+      const list = Array.isArray(tasks) ? tasks : [];
+      const activeAssignee = typeof getActiveAssignee === 'function' ? getActiveAssignee() : null;
+
+      if (metaTextNode) {
+        const total = Number.isFinite(meta.total) ? meta.total : list.length;
+        const overall = Number.isFinite(meta.overall) ? meta.overall : undefined;
+        const pieces = [`表示: ${total}件`];
+        if (Number.isFinite(overall) && overall !== total) {
+          pieces.push(`全体: ${overall}件`);
+        }
+        metaTextNode.textContent = pieces.join(' / ');
+      }
+
+      if (resetButton) {
+        const disabled = !activeAssignee || activeAssignee === allKey;
+        resetButton.classList.toggle('is-disabled', disabled);
+        resetButton.disabled = disabled;
+      }
+
+      if (list.length === 0) {
+        body.innerHTML = '';
+        const empty = document.createElement('div');
+        empty.className = 'workload-empty';
+        empty.textContent = '担当者別サマリーを表示するカードがありません。';
+        body.appendChild(empty);
+        return;
+      }
+
+      const summary = summarizeAssigneeWorkload(list, {
+        normalizeStatusLabel: normalizeStatus,
+        unassignedKey,
+        unassignedLabel,
+        getDueState: dueEvaluator,
+      });
+
+      const statusOrder = [];
+      const seenStatuses = new Set();
+      const baseStatuses = typeof getStatuses === 'function' ? getStatuses() : [];
+      if (Array.isArray(baseStatuses)) {
+        baseStatuses.forEach(status => {
+          const text = String(status ?? '').trim();
+          if (!text || seenStatuses.has(text)) return;
+          seenStatuses.add(text);
+          statusOrder.push(text);
+        });
+      }
+      summary.statuses.forEach(status => {
+        const text = String(status ?? '').trim();
+        if (!text || seenStatuses.has(text)) return;
+        seenStatuses.add(text);
+        statusOrder.push(text);
+      });
+
+      const fragment = document.createDocumentFragment();
+      summary.assignees.forEach(entry => {
+        const article = document.createElement('article');
+        article.className = 'workload-entry';
+        if ((entry.due?.overdue ?? 0) > 0) {
+          article.classList.add('has-overdue');
+        } else if ((entry.due?.warning ?? 0) > 0) {
+          article.classList.add('has-warning');
+        }
+        if (highlightFn(entry)) {
+          article.classList.add('is-heavy');
+        }
+        if (activeAssignee && activeAssignee === entry.key) {
+          article.classList.add('is-active');
+        }
+
+        const header = document.createElement('div');
+        header.className = 'workload-entry-header';
+
+        const nameBtn = document.createElement('button');
+        nameBtn.type = 'button';
+        nameBtn.className = 'assignee-button';
+        nameBtn.dataset.assigneeFilter = entry.key;
+        nameBtn.textContent = entry.label;
+        if (activeAssignee && activeAssignee === entry.key) {
+          nameBtn.classList.add('is-active');
+        }
+        header.appendChild(nameBtn);
+
+        const total = document.createElement('span');
+        total.className = 'workload-total';
+        total.textContent = `${entry.total}件`;
+        header.appendChild(total);
+        article.appendChild(header);
+
+        const statusesWrap = document.createElement('div');
+        statusesWrap.className = 'workload-statuses';
+        let statusCount = 0;
+        statusOrder.forEach(status => {
+          const count = entry.statusCounts?.[status] || 0;
+          if (count <= 0) return;
+          statusCount += 1;
+          const chip = document.createElement('span');
+          chip.className = 'status-chip';
+          chip.dataset.status = status;
+          chip.textContent = `${status} `;
+          const countSpan = document.createElement('span');
+          countSpan.className = 'status-count';
+          countSpan.textContent = `${count}`;
+          chip.appendChild(countSpan);
+          statusesWrap.appendChild(chip);
+        });
+        if (statusCount === 0) {
+          const chip = document.createElement('span');
+          chip.className = 'status-chip';
+          chip.textContent = 'ステータスなし';
+          statusesWrap.appendChild(chip);
+        }
+        article.appendChild(statusesWrap);
+
+        const dueWrap = document.createElement('div');
+        dueWrap.className = 'workload-due';
+        const overdueCount = entry.due?.overdue || 0;
+        const warningCount = entry.due?.warning || 0;
+        if (overdueCount > 0) {
+          const span = document.createElement('span');
+          span.className = 'due-overdue';
+          span.textContent = `期限超過 ${overdueCount}件`;
+          dueWrap.appendChild(span);
+        }
+        if (warningCount > 0) {
+          const span = document.createElement('span');
+          span.className = 'due-warning';
+          span.textContent = `期限警告 ${warningCount}件`;
+          dueWrap.appendChild(span);
+        }
+        if (!dueWrap.children.length) {
+          const span = document.createElement('span');
+          span.textContent = '期限警告なし';
+          dueWrap.appendChild(span);
+        }
+        article.appendChild(dueWrap);
+
+        fragment.appendChild(article);
+      });
+
+      body.innerHTML = '';
+      body.appendChild(fragment);
+    };
+
+    return { update };
+  }
+
   global.TaskAppCommon = {
     createMockApi,
     ready,
@@ -415,6 +799,11 @@
     normalizeValidationValues,
     createPriorityHelper,
     setupRuntime,
+    parseISO: parseISODate,
+    isCompletedStatus,
+    getDueState,
+    summarizeAssigneeWorkload,
+    createWorkloadSummary,
     PRIORITY_DEFAULT_OPTIONS,
     DEFAULT_STATUSES,
     UNSET_STATUS_LABEL,

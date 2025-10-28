@@ -91,7 +91,18 @@
     </div>
   </div>
 
-  <div id="list-summary" class="list-summary"></div>
+  <aside id="workload-summary" class="workload-summary" aria-labelledby="workload-summary-title">
+    <div class="workload-summary-header">
+      <div class="workload-summary-heading">
+        <h2 id="workload-summary-title">担当者別サマリー</h2>
+        <div class="workload-summary-meta" id="workload-summary-meta"></div>
+      </div>
+      <button type="button" class="workload-toggle" aria-expanded="true" aria-controls="workload-summary-body" aria-label="担当者別サマリーの表示切替">
+        <span class="workload-toggle-icon" aria-hidden="true"></span>
+      </button>
+    </div>
+    <div id="workload-summary-body" class="workload-summary-body" aria-live="polite"></div>
+  </aside>
 
   <div class="list-wrapper">
     <div class="list-panel">
