@@ -285,26 +285,67 @@ function uniqAssignees() {
 
 function collectCategoryOptions() {
   const majorMap = new Map();
-  TASKS.forEach(task => {
-    const major = String(task?.大分類 ?? '').trim();
-    const minor = String(task?.中分類 ?? '').trim();
-    if (!major) return;
-    if (!majorMap.has(major)) {
-      majorMap.set(major, new Set());
+  const looseMinors = new Set();
+
+  const ensureMajor = (name) => {
+    const text = String(name ?? '').trim();
+    if (!text) return null;
+    if (!majorMap.has(text)) {
+      majorMap.set(text, new Set());
     }
-    if (minor) {
-      majorMap.get(major).add(minor);
+    return majorMap.get(text);
+  };
+
+  if (Array.isArray(TASKS)) {
+    TASKS.forEach(task => {
+      const major = String(task?.大分類 ?? '').trim();
+      const minor = String(task?.中分類 ?? '').trim();
+      if (major) {
+        const set = ensureMajor(major);
+        if (minor && set) {
+          set.add(minor);
+        }
+      } else if (minor) {
+        looseMinors.add(minor);
+      }
+    });
+  }
+
+  const validatedMajors = Array.isArray(VALIDATIONS['大分類']) ? VALIDATIONS['大分類'] : [];
+  validatedMajors.forEach(name => {
+    ensureMajor(name);
+  });
+
+  const validatedMinors = Array.isArray(VALIDATIONS['中分類']) ? VALIDATIONS['中分類'] : [];
+  validatedMinors.forEach(name => {
+    const text = String(name ?? '').trim();
+    if (!text) return;
+    let assigned = false;
+    majorMap.forEach(set => {
+      if (set.has(text)) assigned = true;
+    });
+    if (!assigned) {
+      looseMinors.add(text);
     }
   });
 
   const majorList = Array.from(majorMap.keys()).sort((a, b) => a.localeCompare(b, 'ja'));
   const minorMap = new Map();
   majorList.forEach(major => {
-    const minors = majorMap.get(major) ?? new Set();
-    minorMap.set(major, Array.from(minors).sort((a, b) => a.localeCompare(b, 'ja')));
+    const minors = Array.from(majorMap.get(major) ?? new Set())
+      .sort((a, b) => a.localeCompare(b, 'ja'));
+    minorMap.set(major, minors);
   });
 
-  return { majorList, minorMap };
+  const allMinorsSet = new Set();
+  minorMap.forEach(list => {
+    list.forEach(value => allMinorsSet.add(value));
+  });
+  looseMinors.forEach(value => allMinorsSet.add(value));
+
+  const allMinors = Array.from(allMinorsSet).sort((a, b) => a.localeCompare(b, 'ja'));
+
+  return { majorList, minorMap, allMinors };
 }
 
 function buildFiltersUI() {
@@ -914,6 +955,68 @@ function openEdit(no) {
   openModal(t, { mode: 'edit' });
 }
 
+function setupCategoryInputSuggestions(fmajor, fminor) {
+  const majorListEl = document.getElementById('modal-major-list');
+  const minorListEl = document.getElementById('modal-minor-list');
+  if (!majorListEl && !minorListEl) return;
+
+  const { majorList, minorMap, allMinors } = collectCategoryOptions();
+
+  const fillOptions = (datalist, values) => {
+    if (!datalist) return;
+    datalist.innerHTML = '';
+    if (!Array.isArray(values)) return;
+    const seen = new Set();
+    values.forEach(value => {
+      const text = String(value ?? '').trim();
+      if (!text || seen.has(text)) return;
+      seen.add(text);
+      const opt = document.createElement('option');
+      opt.value = text;
+      datalist.appendChild(opt);
+    });
+  };
+
+  fillOptions(majorListEl, majorList);
+
+  const fallbackMinors = Array.isArray(allMinors) ? allMinors : [];
+  const updateMinorOptions = () => {
+    if (!minorListEl) return;
+    const majorValue = String(fmajor?.value ?? '').trim();
+    let candidates = fallbackMinors;
+    if (majorValue && minorMap.has(majorValue)) {
+      const list = minorMap.get(majorValue) || [];
+      if (Array.isArray(list) && list.length > 0) {
+        candidates = list;
+      }
+    }
+    fillOptions(minorListEl, candidates);
+  };
+
+  updateMinorOptions();
+
+  if (fmajor && minorListEl) {
+    if (typeof fmajor.__minorListHandler === 'function') {
+      fmajor.removeEventListener('input', fmajor.__minorListHandler);
+      fmajor.removeEventListener('change', fmajor.__minorListHandler);
+    }
+    const handler = () => updateMinorOptions();
+    fmajor.__minorListHandler = handler;
+    fmajor.addEventListener('input', handler);
+    fmajor.addEventListener('change', handler);
+  }
+
+  if (fminor && minorListEl) {
+    // Ensure the list is refreshed when the field gains focus after manual edits.
+    if (typeof fminor.__minorListRefresh === 'function') {
+      fminor.removeEventListener('focus', fminor.__minorListRefresh);
+    }
+    const refresh = () => updateMinorOptions();
+    fminor.__minorListRefresh = refresh;
+    fminor.addEventListener('focus', refresh);
+  }
+}
+
 function openModal(task, { mode }) {
   const modal = document.getElementById('modal');
   const title = document.getElementById('modal-title');
@@ -942,6 +1045,7 @@ function openModal(task, { mode }) {
   fstat.value = task.ステータス || STATUSES[0] || '未着手';
   if (fmajor) fmajor.value = task.大分類 || '';
   if (fminor) fminor.value = task.中分類 || '';
+  setupCategoryInputSuggestions(fmajor, fminor);
   fttl.value = task.タスク || '';
   fwho.value = task.担当者 || '';
   applyPriorityOptions(fprio, task.優先度, mode === 'create');
