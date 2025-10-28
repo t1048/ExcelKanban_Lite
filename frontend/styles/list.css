@@ -1,7 +1,5 @@
 body.page-list {
   min-height: 100vh;
-  display: flex;
-  flex-direction: column;
 }
 
 .page-list .filters-bar,
