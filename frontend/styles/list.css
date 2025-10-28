@@ -10,6 +10,33 @@ body.page-list {
   flex-shrink: 0;
 }
 
+.filters-toggle-row {
+  display: flex;
+  justify-content: flex-end;
+  padding: 12px 18px 0;
+}
+
+.filters-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+}
+
+.filters-toggle::before {
+  content: '▲';
+  font-size: 11px;
+  line-height: 1;
+}
+
+.filters-toggle[data-expanded='false']::before {
+  content: '▼';
+}
+
+.page-list.filters-collapsed .filters-toggle-row {
+  padding-bottom: 8px;
+}
+
 .list-summary {
   padding: 14px 18px 0;
   font-size: 13px;
