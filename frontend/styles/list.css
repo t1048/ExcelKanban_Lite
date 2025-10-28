@@ -13,15 +13,27 @@
   border-radius: 18px;
   border: 1px solid var(--border);
   box-shadow: var(--shadow);
-  overflow: hidden;
+  overflow-x: auto;
+  overflow-y: hidden;
 }
 
 table.task-list {
   width: 100%;
+  min-width: 960px;
   border-collapse: separate;
   border-spacing: 0;
   font-size: 13px;
   background: rgba(15, 23, 42, 0.72);
+}
+
+table.task-list th.col-task,
+table.task-list td.task-cell {
+  min-width: 260px;
+}
+
+table.task-list th.col-notes,
+table.task-list td.notes-cell {
+  min-width: 280px;
 }
 
 table.task-list thead th {
