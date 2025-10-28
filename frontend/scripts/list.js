@@ -10,6 +10,9 @@ const {
   normalizeValidationValues,
   createPriorityHelper,
   setupRuntime,
+  parseISO,
+  getDueState,
+  createWorkloadSummary,
   PRIORITY_DEFAULT_OPTIONS,
   DEFAULT_STATUSES,
   UNSET_STATUS_LABEL,
@@ -18,21 +21,6 @@ const {
 let api;                  // 実際に使う API （後で差し替える）
 let RUN_MODE = 'mock';    // 'mock' | 'pywebview'
 let WIRED = false;        // ツールバー多重バインド防止
-
-setupRuntime({
-  mockApiFactory: createMockApi,
-  onApiChanged: ({ api: nextApi, runMode }) => {
-    api = nextApi;
-    RUN_MODE = runMode;
-    console.log('[list] run mode:', RUN_MODE);
-  },
-  onInit: async () => {
-    await init(true);
-  },
-  onRealtimeUpdate: (payload) => (
-    applyStateFromPayload(payload, { preserveFilters: true, fallbackToApi: false })
-  ),
-});
 
 /* ===================== 状態 ===================== */
 const VALIDATION_COLUMNS = ["ステータス", "大分類", "中分類", "タスク", "担当者", "優先度", "期限", "備考"];
@@ -65,6 +53,70 @@ const getDefaultPriorityValue = () => priorityHelper.getDefaultValue();
 const applyPriorityOptions = (selectEl, currentValue, preferDefault = false) => (
   priorityHelper.applyOptions(selectEl, currentValue, preferDefault)
 );
+
+const WORKLOAD_IN_PROGRESS_KEYWORDS = ['進行', '作業中', 'inprogress', 'wip'];
+const WORKLOAD_HEAVY_THRESHOLD = 5;
+
+function workloadInProgressCount(entry) {
+  if (!entry || typeof entry !== 'object' || !entry.statusCounts) return 0;
+  return Object.entries(entry.statusCounts).reduce((acc, [status, count]) => {
+    const numeric = Number(count) || 0;
+    if (numeric <= 0) return acc;
+    const normalized = String(status ?? '')
+      .trim()
+      .toLowerCase()
+      .replace(/\s+/g, '');
+    if (!normalized) return acc;
+    if (WORKLOAD_IN_PROGRESS_KEYWORDS.some(keyword => normalized.includes(keyword))) {
+      return acc + numeric;
+    }
+    return acc;
+  }, 0);
+}
+
+function workloadHighlightPredicate(entry) {
+  return workloadInProgressCount(entry) > WORKLOAD_HEAVY_THRESHOLD;
+}
+
+const workloadSummary = createWorkloadSummary({
+  container: document.getElementById('workload-summary'),
+  getStatuses: () => STATUSES,
+  normalizeStatusLabel,
+  unassignedKey: ASSIGNEE_FILTER_UNASSIGNED,
+  unassignedLabel: ASSIGNEE_UNASSIGNED_LABEL,
+  allKey: ASSIGNEE_FILTER_ALL,
+  getActiveAssignee: () => FILTERS.assignee,
+  getDueState,
+  highlightPredicate: workloadHighlightPredicate,
+  onSelectAssignee: (value) => {
+    const next = (() => {
+      if (!value || value === ASSIGNEE_FILTER_ALL) return ASSIGNEE_FILTER_ALL;
+      if (FILTERS.assignee === value) return ASSIGNEE_FILTER_ALL;
+      return value;
+    })();
+    FILTERS.assignee = next;
+    const select = document.getElementById('flt-assignee');
+    if (select) {
+      select.value = next;
+    }
+    renderList();
+  },
+});
+
+setupRuntime({
+  mockApiFactory: createMockApi,
+  onApiChanged: ({ api: nextApi, runMode }) => {
+    api = nextApi;
+    RUN_MODE = runMode;
+    console.log('[list] run mode:', RUN_MODE);
+  },
+  onInit: async () => {
+    await init(true);
+  },
+  onRealtimeUpdate: (payload) => (
+    applyStateFromPayload(payload, { preserveFilters: true, fallbackToApi: false })
+  ),
+});
 
 const STATUS_SORT_SEQUENCE = ['', UNSET_STATUS_LABEL, '未着手', '進行中', '完了', '保留中'];
 
@@ -624,21 +676,11 @@ async function init(force = false) {
 /* ===================== レンダリング ===================== */
 function renderList() {
   const container = document.getElementById('list-container');
-  const summary = document.getElementById('list-summary');
   if (!container) return;
 
   const filtered = getFilteredTasks();
-  const total = filtered.length;
-  const overall = Array.isArray(TASKS) ? TASKS.length : 0;
 
-  if (summary) {
-    const parts = [];
-    parts.push(`表示件数: ${total} 件`);
-    if (overall && overall !== total) {
-      parts.push(`全体: ${overall} 件`);
-    }
-    summary.textContent = parts.join(' / ');
-  }
+  buildAssigneeWorkload(filtered);
 
   container.innerHTML = '';
 
@@ -827,6 +869,15 @@ function renderList() {
   container.appendChild(table);
 
   updateDueIndicators(filtered);
+}
+
+
+function buildAssigneeWorkload(tasks) {
+  const list = Array.isArray(tasks) ? tasks : [];
+  workloadSummary.update(list, {
+    total: list.length,
+    overall: Array.isArray(TASKS) ? TASKS.length : list.length,
+  });
 }
 
 
@@ -1275,71 +1326,6 @@ function closeValidationModal() {
   if (!modal) return;
   modal.classList.remove('open');
   modal.setAttribute('aria-hidden', 'true');
-}
-
-function parseISO(d) {
-  // 'YYYY-MM-DD' を Date に（失敗は null）
-  if (!d) return null;
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(d);
-  if (!m) return null;
-  const dt = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
-  return isNaN(dt.getTime()) ? null : dt;
-}
-
-function isCompletedStatus(value) {
-  const text = String(value ?? '').trim();
-  if (!text) return false;
-  const normalized = text.toLowerCase().replace(/\s+/g, '');
-  return normalized === '完了'
-    || normalized === '完了済み'
-    || normalized === '完了済'
-    || normalized === 'done'
-    || normalized === 'completed';
-}
-
-function getDueState(task) {
-  if (isCompletedStatus(task?.ステータス)) return null;
-
-  const dueDate = parseISO(task?.期限 || '');
-  if (!dueDate) return null;
-
-  const due = new Date(dueDate.getTime());
-  due.setHours(0, 0, 0, 0);
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const diffDays = Math.ceil((due.getTime() - today.getTime()) / 86400000);
-
-  if (diffDays < 0) {
-    const abs = Math.abs(diffDays);
-    return {
-      level: 'overdue',
-      diff: abs,
-      label: `${abs}日超過`
-    };
-  }
-
-  if (diffDays === 0) {
-    return {
-      level: 'warning',
-      diff: 0,
-      label: '本日期限'
-    };
-  }
-
-  const label = `あと${diffDays}日`;
-  if (diffDays <= 3) {
-    return {
-      level: 'warning',
-      diff: diffDays,
-      label
-    };
-  }
-
-  return {
-    level: 'normal',
-    diff: diffDays,
-    label
-  };
 }
 
 function getFilteredTasks() {
