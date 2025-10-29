@@ -791,6 +791,13 @@ function wireToolbar() {
       window.location.href = 'list.html';
     });
   }
+
+  const calendarBtn = document.getElementById('btn-calendar');
+  if (calendarBtn) {
+    calendarBtn.addEventListener('click', () => {
+      window.location.href = 'calendar.html';
+    });
+  }
 }
 
 /* ===================== 入力規則モーダル ===================== */

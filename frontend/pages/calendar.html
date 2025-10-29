@@ -4,65 +4,51 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>担当者タイムライン</title>
+  <title>タスク・カレンダー</title>
   <link rel="stylesheet" href="../styles/common.css" />
-  <link rel="stylesheet" href="../styles/timeline.css" />
+  <link rel="stylesheet" href="../styles/calendar.css" />
 </head>
 
-<body class="page-timeline">
+<body class="page-calendar">
   <div class="toolbar">
-    <div class="title">担当者タイムライン</div>
+    <div class="title">タスク・カレンダー</div>
     <div class="toolbar-spacer"></div>
     <button id="btn-save" class="btn btn-success">Excelへ保存</button>
     <a href="index.html" class="btn btn-ghost">カンバン表示</a>
     <a href="list.html" class="btn btn-ghost">リスト表示</a>
-    <a href="calendar.html" class="btn btn-ghost">カレンダー</a>
+    <a href="timeline.html" class="btn btn-ghost">タイムライン</a>
   </div>
 
   <main class="page">
-    <section class="panel">
-      <h2 style="margin-top:0; margin-bottom:14px; font-size:16px;">表示期間</h2>
-      <div class="controls">
-        <div class="field">
-          <label for="date-from">開始日</label>
-          <input id="date-from" type="date" />
-        </div>
-        <div class="field">
-          <label for="date-to">終了日</label>
-          <input id="date-to" type="date" />
-        </div>
-        <div class="field">
-          <label for="assignee-filter">担当者</label>
-          <select id="assignee-filter">
-            <option value="">すべて</option>
-            <option value="__UNASSIGNED__">（未割り当て）</option>
-          </select>
-        </div>
-        <button id="btn-apply" class="btn btn-primary">表示を更新</button>
-        <div class="quick">
-          <button data-shift="-7">◀ 前週</button>
-          <button data-range="this-week">今週</button>
-          <button data-shift="7">翌週 ▶</button>
-        </div>
+    <section class="panel calendar-controls-panel">
+      <h2 style="margin:0 0 12px; font-size:16px;">表示月</h2>
+      <div class="calendar-controls">
+        <button id="btn-prev-month" class="btn">◀ 前月</button>
+        <input id="month-picker" type="month" />
+        <button id="btn-next-month" class="btn">翌月 ▶</button>
+        <span id="calendar-current" class="calendar-current"></span>
       </div>
-      <p id="summary" class="summary" style="margin-top:14px;"></p>
+      <p class="calendar-hint">タスクをダブルクリックすると編集できます。日付セルへのドラッグ＆ドロップで期限を変更できます。</p>
     </section>
 
-    <section class="panel" style="display:flex; flex-direction:column; gap:16px;">
-      <div class="legend" id="legend"></div>
-      <div class="timeline-wrapper" id="timeline-wrapper">
+    <section class="panel calendar-grid-panel">
+      <div class="legend" id="calendar-legend"></div>
+      <div class="calendar-grid" id="calendar-grid">
         <div class="message">読み込み中...</div>
       </div>
     </section>
 
-    <section class="panel backlog-panel" id="timeline-backlog">
+    <section class="panel calendar-backlog-panel" id="calendar-backlog">
       <div class="backlog-header">
         <h2 class="backlog-title">バックログ</h2>
         <p class="backlog-description">
-          期限未設定や表示期間外のタスクを表示しています。ダブルクリックで編集できます。
+          期限未設定または表示月以外のタスクです。ここから日付セルへドラッグすると期限を変更できます。
         </p>
       </div>
-      <div class="backlog-content" id="backlog-content">
+      <div class="calendar-backlog-drop" id="calendar-backlog-drop" aria-label="期限を未設定にするドロップエリア">
+        期限を未設定にする場合はこちらにドロップ
+      </div>
+      <div class="backlog-content" id="calendar-backlog-content">
         <div class="message">読み込み中...</div>
       </div>
     </section>
@@ -120,7 +106,7 @@
   </div>
 
   <script src="../scripts/common.js" defer></script>
-  <script src="../scripts/timeline.js" defer></script>
+  <script src="../scripts/calendar.js" defer></script>
 </body>
 
 </html>
