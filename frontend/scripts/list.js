@@ -428,14 +428,38 @@ function createGroupRow(type, label, count, meta = {}) {
     row.dataset.minorValue = meta.minorValue ?? '';
   }
   row.dataset.groupType = type;
-  row.addEventListener('contextmenu', (event) => {
+  let suppressNextContextMenu = false;
+  const triggerContextMenu = (event) => {
     showGroupContextMenu(event, {
       type,
       label,
       majorValue: meta.majorValue ?? '',
       minorValue: meta.minorValue,
     });
+  };
+
+  row.addEventListener('contextmenu', (event) => {
+    if (suppressNextContextMenu) {
+      suppressNextContextMenu = false;
+      return;
+    }
+    triggerContextMenu(event);
   });
+
+  const handleSecondaryPress = (event) => {
+    if (event.button !== 2) return;
+    suppressNextContextMenu = true;
+    triggerContextMenu(event);
+    window.setTimeout(() => {
+      suppressNextContextMenu = false;
+    }, 0);
+  };
+
+  if (window.PointerEvent) {
+    row.addEventListener('pointerdown', handleSecondaryPress);
+  } else {
+    row.addEventListener('mousedown', handleSecondaryPress);
+  }
 
   return row;
 }
