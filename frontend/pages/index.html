@@ -81,6 +81,17 @@
     </div>
 
     <div class="filters-actions">
+      <div class="filter-preset">
+        <label for="flt-preset">プリセット</label>
+        <div class="preset-actions" style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+          <select id="flt-preset" style="min-width:180px;">
+            <option value="">（プリセット未選択）</option>
+          </select>
+          <button id="btn-preset-apply" class="btn" type="button">呼び出し</button>
+          <button id="btn-preset-save" class="btn" type="button">保存</button>
+          <button id="btn-preset-delete" class="btn btn-danger" type="button">削除</button>
+        </div>
+      </div>
       <button id="btn-clear-filters" class="btn">フィルター解除</button>
     </div>
   </div>
