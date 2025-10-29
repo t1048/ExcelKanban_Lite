@@ -13,6 +13,10 @@ const {
   parseISO,
   getDueState,
   createWorkloadSummary,
+  loadFilterPresets,
+  saveFilterPreset,
+  deleteFilterPreset,
+  applyFilterPreset,
   PRIORITY_DEFAULT_OPTIONS,
   DEFAULT_STATUSES,
   UNSET_STATUS_LABEL,
@@ -77,6 +81,264 @@ const getDefaultPriorityValue = () => priorityHelper.getDefaultValue();
 const applyPriorityOptions = (selectEl, currentValue, preferDefault = false) => (
   priorityHelper.applyOptions(selectEl, currentValue, preferDefault)
 );
+
+const FILTER_PRESET_VIEW_KEY = 'kanban-board';
+let FILTER_PRESETS = [];
+let ACTIVE_FILTER_PRESET = '';
+let PRESET_INITIAL_APPLIED = false;
+
+function initializeFilterPresetsState() {
+  try {
+    const { presets, lastApplied } = loadFilterPresets(FILTER_PRESET_VIEW_KEY) || {};
+    FILTER_PRESETS = Array.isArray(presets) ? presets : [];
+    ACTIVE_FILTER_PRESET = lastApplied?.name || '';
+  } catch (err) {
+    console.warn('[kanban] failed to load filter presets', err);
+    FILTER_PRESETS = [];
+    ACTIVE_FILTER_PRESET = '';
+  }
+}
+
+initializeFilterPresetsState();
+
+function createDefaultFilterState() {
+  const statuses = Array.isArray(STATUSES) ? STATUSES : [];
+  const nextStatuses = new Set();
+  statuses.forEach(status => nextStatuses.add(status));
+  if (nextStatuses.size === 0) {
+    statuses.forEach(status => nextStatuses.add(status));
+  }
+  return {
+    assignee: ASSIGNEE_FILTER_ALL,
+    statuses: nextStatuses,
+    keyword: '',
+    date: { mode: 'none', from: '', to: '' },
+    category: { major: CATEGORY_FILTER_ALL, minor: CATEGORY_FILTER_MINOR_ALL }
+  };
+}
+
+function serializeFiltersForPreset() {
+  const result = {
+    assignee: FILTERS.assignee,
+    statuses: [],
+    keyword: String(FILTERS.keyword ?? ''),
+    date: {
+      mode: FILTERS.date?.mode || 'none',
+      from: FILTERS.date?.from || '',
+      to: FILTERS.date?.to || '',
+    },
+    category: {
+      major: FILTERS.category?.major ?? CATEGORY_FILTER_ALL,
+      minor: FILTERS.category?.minor ?? CATEGORY_FILTER_MINOR_ALL,
+    }
+  };
+
+  const seen = new Set();
+  const orderedStatuses = Array.isArray(STATUSES) ? STATUSES.slice() : [];
+  orderedStatuses.forEach(status => {
+    const text = String(status ?? '').trim();
+    if (!text || seen.has(text)) return;
+    if (FILTERS.statuses.has(text)) {
+      result.statuses.push(text);
+      seen.add(text);
+    }
+  });
+  if (FILTERS.statuses.has(UNSET_STATUS_LABEL) && !seen.has(UNSET_STATUS_LABEL)) {
+    result.statuses.push(UNSET_STATUS_LABEL);
+    seen.add(UNSET_STATUS_LABEL);
+  }
+  FILTERS.statuses.forEach(status => {
+    const text = String(status ?? '').trim();
+    if (!text || seen.has(text)) return;
+    result.statuses.push(text);
+    seen.add(text);
+  });
+
+  return result;
+}
+
+function applyPresetFilters(raw) {
+  const data = raw && typeof raw === 'object' ? raw : {};
+  const next = createDefaultFilterState();
+
+  const assigneeRaw = String(data.assignee ?? '').trim();
+  if (!assigneeRaw) {
+    next.assignee = ASSIGNEE_FILTER_ALL;
+  } else if (assigneeRaw === ASSIGNEE_FILTER_UNASSIGNED) {
+    next.assignee = ASSIGNEE_FILTER_UNASSIGNED;
+  } else {
+    next.assignee = assigneeRaw;
+  }
+
+  const availableStatuses = new Set(Array.isArray(STATUSES) ? STATUSES.map(s => String(s ?? '').trim()) : []);
+  availableStatuses.add(UNSET_STATUS_LABEL);
+  const presetStatuses = Array.isArray(data.statuses) ? data.statuses : [];
+  const assigned = new Set();
+  presetStatuses.forEach(value => {
+    const text = String(value ?? '').trim();
+    if (!text || assigned.has(text)) return;
+    if (availableStatuses.has(text)) {
+      assigned.add(text);
+    }
+  });
+  if (assigned.size === 0) {
+    availableStatuses.forEach(status => {
+      if (status) assigned.add(status);
+    });
+  }
+  next.statuses = assigned;
+
+  next.keyword = String(data.keyword ?? '');
+
+  const allowedModes = new Set(['none', 'range', 'before', 'after']);
+  const dateRaw = data.date && typeof data.date === 'object' ? data.date : {};
+  const mode = allowedModes.has(dateRaw.mode) ? dateRaw.mode : 'none';
+  next.date = {
+    mode,
+    from: String(dateRaw.from ?? ''),
+    to: String(dateRaw.to ?? ''),
+  };
+
+  const categoryRaw = data.category && typeof data.category === 'object' ? data.category : {};
+  const major = String(categoryRaw.major ?? '').trim() || CATEGORY_FILTER_ALL;
+  const minor = String(categoryRaw.minor ?? '').trim() || CATEGORY_FILTER_MINOR_ALL;
+  next.category = { major, minor };
+
+  FILTERS = next;
+}
+
+function maybeApplyInitialPreset() {
+  if (PRESET_INITIAL_APPLIED) return;
+  PRESET_INITIAL_APPLIED = true;
+  if (!ACTIVE_FILTER_PRESET) return;
+  const preset = FILTER_PRESETS.find(item => item?.name === ACTIVE_FILTER_PRESET);
+  if (!preset) {
+    ACTIVE_FILTER_PRESET = '';
+    return;
+  }
+  applyPresetFilters(preset.filters);
+}
+
+function ensureFilterPresetHandlers() {
+  const select = document.getElementById('flt-preset');
+  const applyBtn = document.getElementById('btn-preset-apply');
+  const saveBtn = document.getElementById('btn-preset-save');
+  const deleteBtn = document.getElementById('btn-preset-delete');
+  if (!select || !applyBtn || !saveBtn || !deleteBtn) return;
+  if (select.dataset.bound === '1') return;
+  select.dataset.bound = '1';
+
+  const refreshButtonState = () => {
+    const selected = select.value;
+    const exists = Boolean(selected) && FILTER_PRESETS.some(preset => preset?.name === selected);
+    applyBtn.disabled = !exists;
+    deleteBtn.disabled = !exists;
+  };
+
+  select.addEventListener('change', () => {
+    ACTIVE_FILTER_PRESET = select.value;
+    refreshButtonState();
+  });
+
+  applyBtn.addEventListener('click', () => {
+    const targetName = select.value;
+    if (!targetName) {
+      alert('プリセットを選択してください。');
+      return;
+    }
+    const result = applyFilterPreset(FILTER_PRESET_VIEW_KEY, targetName, (filters) => {
+      applyPresetFilters(filters);
+      return true;
+    });
+    FILTER_PRESETS = result.presets;
+    if (result.applied) {
+      ACTIVE_FILTER_PRESET = result.applied.name;
+      PRESET_INITIAL_APPLIED = true;
+      buildFiltersUI();
+      renderBoard();
+    } else {
+      alert('選択したプリセットが見つかりません。');
+      updateFilterPresetUI();
+    }
+  });
+
+  saveBtn.addEventListener('click', () => {
+    const defaultName = select.value || '';
+    const name = window.prompt('プリセット名を入力してください', defaultName);
+    if (name === null) return;
+    const trimmed = name.trim();
+    if (!trimmed) {
+      alert('プリセット名を入力してください。');
+      return;
+    }
+    const payload = serializeFiltersForPreset();
+    const result = saveFilterPreset(FILTER_PRESET_VIEW_KEY, trimmed, payload);
+    FILTER_PRESETS = result.presets;
+    if (result.saved) {
+      ACTIVE_FILTER_PRESET = result.saved.name;
+      PRESET_INITIAL_APPLIED = true;
+    }
+    updateFilterPresetUI();
+  });
+
+  deleteBtn.addEventListener('click', () => {
+    const targetName = select.value;
+    if (!targetName) {
+      alert('削除するプリセットを選択してください。');
+      return;
+    }
+    if (!window.confirm(`プリセット「${targetName}」を削除しますか？`)) {
+      return;
+    }
+    const result = deleteFilterPreset(FILTER_PRESET_VIEW_KEY, targetName);
+    FILTER_PRESETS = result.presets;
+    if (ACTIVE_FILTER_PRESET === targetName) {
+      ACTIVE_FILTER_PRESET = '';
+    }
+    updateFilterPresetUI();
+  });
+
+  refreshButtonState();
+}
+
+function updateFilterPresetUI() {
+  const select = document.getElementById('flt-preset');
+  const applyBtn = document.getElementById('btn-preset-apply');
+  const deleteBtn = document.getElementById('btn-preset-delete');
+  ensureFilterPresetHandlers();
+  if (!select) return;
+
+  const previousValue = select.value;
+  select.innerHTML = '';
+
+  const placeholder = document.createElement('option');
+  placeholder.value = '';
+  placeholder.textContent = '（プリセット未選択）';
+  select.appendChild(placeholder);
+
+  FILTER_PRESETS.forEach(preset => {
+    if (!preset || typeof preset.name !== 'string') return;
+    const opt = document.createElement('option');
+    opt.value = preset.name;
+    opt.textContent = preset.name;
+    select.appendChild(opt);
+  });
+
+  let nextValue = '';
+  if (ACTIVE_FILTER_PRESET && FILTER_PRESETS.some(p => p?.name === ACTIVE_FILTER_PRESET)) {
+    nextValue = ACTIVE_FILTER_PRESET;
+  } else if (FILTER_PRESETS.some(p => p?.name === previousValue)) {
+    nextValue = previousValue;
+    ACTIVE_FILTER_PRESET = previousValue;
+  } else {
+    ACTIVE_FILTER_PRESET = '';
+  }
+
+  select.value = nextValue;
+  const hasSelection = Boolean(select.value);
+  if (applyBtn) applyBtn.disabled = !hasSelection;
+  if (deleteBtn) deleteBtn.disabled = !hasSelection;
+}
 
 const WORKLOAD_IN_PROGRESS_KEYWORDS = ['進行', '作業中', 'inprogress', 'wip'];
 const WORKLOAD_HEAVY_THRESHOLD = 5;
@@ -174,6 +436,7 @@ async function applyStateFromPayload(payload, options = {}) {
 
   applyValidationState(validationPayload);
   syncFilterStatuses(prevSelection);
+  maybeApplyInitialPreset();
   renderBoard();
   buildFiltersUI();
 }
@@ -617,9 +880,13 @@ function buildFiltersUI() {
       date: { mode: 'none', from: '', to: '' },
       category: { major: CATEGORY_FILTER_ALL, minor: CATEGORY_FILTER_MINOR_ALL }
     };
+    ACTIVE_FILTER_PRESET = '';
+    PRESET_INITIAL_APPLIED = true;
     buildFiltersUI();
     renderBoard();
   };
+
+  updateFilterPresetUI();
 }
 
 

@@ -10,6 +10,10 @@ const {
   createPriorityHelper,
   setupRuntime,
   setupDragViewportAutoScroll,
+  loadFilterPresets,
+  saveFilterPreset,
+  deleteFilterPreset,
+  applyFilterPreset,
   PRIORITY_DEFAULT_OPTIONS,
   UNSET_STATUS_LABEL,
 } = window.TaskAppCommon;
@@ -24,6 +28,30 @@ const ASSIGNEE_FILTER_ALL = '';
 const ASSIGNEE_FILTER_UNASSIGNED = '__UNASSIGNED__';
 const ASSIGNEE_UNASSIGNED_LABEL = '（未割り当て）';
 let cleanupAutoScroll = null;
+
+let FILTERS = {
+  range: { from: '', to: '' },
+  assignee: ASSIGNEE_FILTER_ALL,
+};
+
+const FILTER_PRESET_VIEW_KEY = 'timeline';
+let FILTER_PRESETS = [];
+let ACTIVE_FILTER_PRESET = '';
+let PRESET_INITIAL_APPLIED = false;
+
+function initializeFilterPresetsState() {
+  try {
+    const { presets, lastApplied } = loadFilterPresets(FILTER_PRESET_VIEW_KEY) || {};
+    FILTER_PRESETS = Array.isArray(presets) ? presets : [];
+    ACTIVE_FILTER_PRESET = lastApplied?.name || '';
+  } catch (err) {
+    console.warn('[timeline] failed to load filter presets', err);
+    FILTER_PRESETS = [];
+    ACTIVE_FILTER_PRESET = '';
+  }
+}
+
+initializeFilterPresetsState();
 
 const INITIAL_LOAD_FLAG_KEY = 'kanban:excelLoaded';
 
@@ -60,6 +88,189 @@ const getDefaultPriorityValue = () => priorityHelper.getDefaultValue();
 const applyPriorityOptions = (selectEl, currentValue, preferDefault = false) => (
   priorityHelper.applyOptions(selectEl, currentValue, preferDefault)
 );
+
+function syncFiltersFromUI() {
+  const fromInput = document.getElementById('date-from');
+  const toInput = document.getElementById('date-to');
+  FILTERS.range = {
+    from: fromInput ? fromInput.value : '',
+    to: toInput ? toInput.value : '',
+  };
+  const assigneeSelect = document.getElementById('assignee-filter');
+  FILTERS.assignee = assigneeSelect ? assigneeSelect.value : ASSIGNEE_FILTER_ALL;
+}
+
+function applyFiltersToUI() {
+  const fromInput = document.getElementById('date-from');
+  const toInput = document.getElementById('date-to');
+  if (fromInput) fromInput.value = FILTERS.range.from || '';
+  if (toInput) toInput.value = FILTERS.range.to || '';
+  const assigneeSelect = document.getElementById('assignee-filter');
+  if (assigneeSelect) {
+    const target = FILTERS.assignee || ASSIGNEE_FILTER_ALL;
+    const hasOption = Array.from(assigneeSelect.options).some(opt => opt.value === target);
+    assigneeSelect.value = hasOption ? target : ASSIGNEE_FILTER_ALL;
+    FILTERS.assignee = assigneeSelect.value;
+  }
+}
+
+function serializeFiltersForPreset() {
+  return {
+    range: {
+      from: FILTERS.range.from || '',
+      to: FILTERS.range.to || '',
+    },
+    assignee: FILTERS.assignee || ASSIGNEE_FILTER_ALL,
+  };
+}
+
+function applyPresetFilters(raw) {
+  const data = raw && typeof raw === 'object' ? raw : {};
+  const range = data.range && typeof data.range === 'object' ? data.range : {};
+  FILTERS.range = {
+    from: String(range.from ?? ''),
+    to: String(range.to ?? ''),
+  };
+  const assignee = String(data.assignee ?? '').trim();
+  FILTERS.assignee = assignee || ASSIGNEE_FILTER_ALL;
+  applyFiltersToUI();
+}
+
+function maybeApplyInitialPreset() {
+  if (PRESET_INITIAL_APPLIED) return;
+  PRESET_INITIAL_APPLIED = true;
+  if (!ACTIVE_FILTER_PRESET) return;
+  const preset = FILTER_PRESETS.find(item => item?.name === ACTIVE_FILTER_PRESET);
+  if (!preset) {
+    ACTIVE_FILTER_PRESET = '';
+    return;
+  }
+  applyPresetFilters(preset.filters);
+}
+
+function ensureFilterPresetHandlers() {
+  const select = document.getElementById('timeline-preset');
+  const applyBtn = document.getElementById('btn-timeline-preset-apply');
+  const saveBtn = document.getElementById('btn-timeline-preset-save');
+  const deleteBtn = document.getElementById('btn-timeline-preset-delete');
+  if (!select || !applyBtn || !saveBtn || !deleteBtn) return;
+  if (select.dataset.bound === '1') return;
+  select.dataset.bound = '1';
+
+  const refreshButtonState = () => {
+    const selected = select.value;
+    const exists = Boolean(selected) && FILTER_PRESETS.some(preset => preset?.name === selected);
+    applyBtn.disabled = !exists;
+    deleteBtn.disabled = !exists;
+  };
+
+  select.addEventListener('change', () => {
+    ACTIVE_FILTER_PRESET = select.value;
+    refreshButtonState();
+  });
+
+  applyBtn.addEventListener('click', () => {
+    const targetName = select.value;
+    if (!targetName) {
+      alert('プリセットを選択してください。');
+      return;
+    }
+    const result = applyFilterPreset(FILTER_PRESET_VIEW_KEY, targetName, (filters) => {
+      applyPresetFilters(filters);
+      return true;
+    });
+    FILTER_PRESETS = result.presets;
+    if (result.applied) {
+      ACTIVE_FILTER_PRESET = result.applied.name;
+      PRESET_INITIAL_APPLIED = true;
+      syncFiltersFromUI();
+      renderSummary();
+      renderAssigneeFilter();
+      renderTimeline();
+    } else {
+      alert('選択したプリセットが見つかりません。');
+      updateFilterPresetUI();
+    }
+  });
+
+  saveBtn.addEventListener('click', () => {
+    const defaultName = select.value || '';
+    const name = window.prompt('プリセット名を入力してください', defaultName);
+    if (name === null) return;
+    const trimmed = name.trim();
+    if (!trimmed) {
+      alert('プリセット名を入力してください。');
+      return;
+    }
+    syncFiltersFromUI();
+    const payload = serializeFiltersForPreset();
+    const result = saveFilterPreset(FILTER_PRESET_VIEW_KEY, trimmed, payload);
+    FILTER_PRESETS = result.presets;
+    if (result.saved) {
+      ACTIVE_FILTER_PRESET = result.saved.name;
+      PRESET_INITIAL_APPLIED = true;
+    }
+    updateFilterPresetUI();
+  });
+
+  deleteBtn.addEventListener('click', () => {
+    const targetName = select.value;
+    if (!targetName) {
+      alert('削除するプリセットを選択してください。');
+      return;
+    }
+    if (!window.confirm(`プリセット「${targetName}」を削除しますか？`)) {
+      return;
+    }
+    const result = deleteFilterPreset(FILTER_PRESET_VIEW_KEY, targetName);
+    FILTER_PRESETS = result.presets;
+    if (ACTIVE_FILTER_PRESET === targetName) {
+      ACTIVE_FILTER_PRESET = '';
+    }
+    updateFilterPresetUI();
+  });
+
+  refreshButtonState();
+}
+
+function updateFilterPresetUI() {
+  ensureFilterPresetHandlers();
+  const select = document.getElementById('timeline-preset');
+  const applyBtn = document.getElementById('btn-timeline-preset-apply');
+  const deleteBtn = document.getElementById('btn-timeline-preset-delete');
+  if (!select) return;
+
+  const previousValue = select.value;
+  select.innerHTML = '';
+
+  const placeholder = document.createElement('option');
+  placeholder.value = '';
+  placeholder.textContent = '（プリセット未選択）';
+  select.appendChild(placeholder);
+
+  FILTER_PRESETS.forEach(preset => {
+    if (!preset || typeof preset.name !== 'string') return;
+    const opt = document.createElement('option');
+    opt.value = preset.name;
+    opt.textContent = preset.name;
+    select.appendChild(opt);
+  });
+
+  let nextValue = '';
+  if (ACTIVE_FILTER_PRESET && FILTER_PRESETS.some(p => p?.name === ACTIVE_FILTER_PRESET)) {
+    nextValue = ACTIVE_FILTER_PRESET;
+  } else if (FILTER_PRESETS.some(p => p?.name === previousValue)) {
+    nextValue = previousValue;
+    ACTIVE_FILTER_PRESET = previousValue;
+  } else {
+    ACTIVE_FILTER_PRESET = '';
+  }
+
+  select.value = nextValue;
+  const hasSelection = Boolean(select.value);
+  if (applyBtn) applyBtn.disabled = !hasSelection;
+  if (deleteBtn) deleteBtn.disabled = !hasSelection;
+}
 
 setupRuntime({
   mockApiFactory: createMockApi,
@@ -124,6 +335,8 @@ async function init(force = false) {
   }
 
   ensureRangeDefaults();
+  maybeApplyInitialPreset();
+  syncFiltersFromUI();
   renderSummary();
   renderLegend();
   renderAssigneeFilter();
@@ -177,6 +390,8 @@ async function applyStateFromPayload(payload, { fallbackToApi = false } = {}) {
   }
 
   ensureRangeDefaults();
+  maybeApplyInitialPreset();
+  syncFiltersFromUI();
   renderSummary();
   renderLegend();
   renderAssigneeFilter();
@@ -209,10 +424,12 @@ function ensureRangeDefaults() {
 
   inputFrom.value = toISODate(start);
   inputTo.value = toISODate(end);
+  syncFiltersFromUI();
 }
 
 function wireControls() {
   document.getElementById('btn-apply').addEventListener('click', () => {
+    syncFiltersFromUI();
     renderSummary();
     renderAssigneeFilter();
     renderTimeline();
@@ -222,6 +439,7 @@ function wireControls() {
     btn.addEventListener('click', () => {
       const delta = Number(btn.dataset.shift || '0');
       shiftRange(delta);
+      syncFiltersFromUI();
       renderSummary();
       renderAssigneeFilter();
       renderTimeline();
@@ -235,6 +453,7 @@ function wireControls() {
     const end = new Date(start);
     end.setDate(start.getDate() + 6);
     setRange(start, end);
+    syncFiltersFromUI();
     renderSummary();
     renderAssigneeFilter();
     renderTimeline();
@@ -242,6 +461,7 @@ function wireControls() {
 
   const assigneeSelect = document.getElementById('assignee-filter');
   assigneeSelect.addEventListener('change', () => {
+    FILTERS.assignee = assigneeSelect.value || ASSIGNEE_FILTER_ALL;
     renderTimeline();
   });
 
@@ -272,6 +492,7 @@ function shiftRange(deltaDays) {
   from.setDate(from.getDate() + deltaDays);
   to.setDate(to.getDate() + deltaDays);
   setRange(from, to);
+  syncFiltersFromUI();
 }
 
 function setRange(from, to) {
@@ -279,11 +500,16 @@ function setRange(from, to) {
   const inputTo = document.getElementById('date-to');
   inputFrom.value = toISODate(from);
   inputTo.value = toISODate(to);
+  FILTERS.range = {
+    from: inputFrom.value,
+    to: inputTo.value,
+  };
 }
 
 function renderSummary() {
-  const from = parseISO(document.getElementById('date-from').value);
-  const to = parseISO(document.getElementById('date-to').value);
+  syncFiltersFromUI();
+  const from = parseISO(FILTERS.range.from);
+  const to = parseISO(FILTERS.range.to);
   const summary = document.getElementById('summary');
   if (!from || !to) {
     summary.textContent = '開始日と終了日を指定してください。';
@@ -304,7 +530,7 @@ function renderAssigneeFilter() {
   const select = document.getElementById('assignee-filter');
   if (!select) return;
 
-  const previous = select.value;
+  const targetAssignee = FILTERS.assignee || ASSIGNEE_FILTER_ALL;
   const assignees = collectAllAssignees().filter(name => name !== ASSIGNEE_UNASSIGNED_LABEL);
   select.innerHTML = '';
 
@@ -325,13 +551,15 @@ function renderAssigneeFilter() {
     select.appendChild(option);
   });
 
-  if (previous === ASSIGNEE_FILTER_UNASSIGNED) {
+  if (targetAssignee === ASSIGNEE_FILTER_UNASSIGNED) {
     select.value = ASSIGNEE_FILTER_UNASSIGNED;
-  } else if (previous && assignees.includes(previous)) {
-    select.value = previous;
+  } else if (targetAssignee && assignees.includes(targetAssignee)) {
+    select.value = targetAssignee;
   } else {
     select.value = ASSIGNEE_FILTER_ALL;
   }
+  FILTERS.assignee = select.value;
+  updateFilterPresetUI();
 }
 
 function renderLegend() {
@@ -380,10 +608,10 @@ function collectBacklogTasks(rangeFrom, rangeTo) {
 
 function renderTimeline() {
   const wrapper = document.getElementById('timeline-wrapper');
-  const from = parseISO(document.getElementById('date-from').value);
-  const to = parseISO(document.getElementById('date-to').value);
-  const assigneeSelect = document.getElementById('assignee-filter');
-  const assigneeFilter = assigneeSelect ? assigneeSelect.value : ASSIGNEE_FILTER_ALL;
+  syncFiltersFromUI();
+  const from = parseISO(FILTERS.range.from);
+  const to = parseISO(FILTERS.range.to);
+  const assigneeFilter = FILTERS.assignee || ASSIGNEE_FILTER_ALL;
   const backlogTasks = collectBacklogTasks(from, to);
   renderBacklog(backlogTasks, { from, to });
   if (!from || !to || from > to) {

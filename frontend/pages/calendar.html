@@ -28,6 +28,15 @@
         <button id="btn-next-month" class="btn">翌月 ▶</button>
         <span id="calendar-current" class="calendar-current"></span>
       </div>
+      <div class="calendar-preset-controls" style="margin-top:8px; display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+        <label for="calendar-preset">プリセット</label>
+        <select id="calendar-preset" style="min-width:180px;">
+          <option value="">（プリセット未選択）</option>
+        </select>
+        <button id="btn-calendar-preset-apply" class="btn" type="button">呼び出し</button>
+        <button id="btn-calendar-preset-save" class="btn" type="button">保存</button>
+        <button id="btn-calendar-preset-delete" class="btn btn-danger" type="button">削除</button>
+      </div>
       <p class="calendar-hint">タスクをダブルクリックすると編集できます。日付セルへのドラッグ＆ドロップで期限を変更できます。</p>
     </section>
 

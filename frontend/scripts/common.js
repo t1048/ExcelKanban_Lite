@@ -5,6 +5,229 @@
   const PRIORITY_DEFAULT_OPTIONS = ['高', '中', '低'];
   const DEFAULT_STATUSES = ['未着手', '進行中', '完了', '保留'];
   const UNSET_STATUS_LABEL = 'ステータス未設定';
+  const FILTER_PRESET_STORAGE_KEY = 'kanban:filterPresets';
+
+  function clonePlain(value) {
+    if (value === null || value === undefined) return value;
+    if (Array.isArray(value)) {
+      return value.map(item => clonePlain(item));
+    }
+    if (value instanceof Set) {
+      return Array.from(value).map(item => clonePlain(item));
+    }
+    if (value instanceof Date) {
+      const time = value.getTime();
+      return Number.isNaN(time) ? null : value.toISOString();
+    }
+    if (typeof value === 'object') {
+      const result = {};
+      Object.keys(value).forEach(key => {
+        const entry = value[key];
+        if (typeof entry === 'function' || entry === undefined) return;
+        result[key] = clonePlain(entry);
+      });
+      return result;
+    }
+    return value;
+  }
+
+  function sanitizePresetEntry(raw) {
+    if (!raw || typeof raw !== 'object') return null;
+    const name = String(raw.name ?? '').trim();
+    if (!name) return null;
+    const filters = clonePlain(raw.filters ?? {});
+    const updatedAt = Number(raw.updatedAt);
+    const lastAppliedAt = Number(raw.lastAppliedAt);
+    const preset = { name, filters };
+    if (Number.isFinite(updatedAt) && updatedAt > 0) {
+      preset.updatedAt = updatedAt;
+    } else {
+      preset.updatedAt = Date.now();
+    }
+    if (Number.isFinite(lastAppliedAt) && lastAppliedAt > 0) {
+      preset.lastAppliedAt = lastAppliedAt;
+    }
+    return preset;
+  }
+
+  function readFilterPresetStore() {
+    let parsed = {};
+    let dirty = false;
+    try {
+      const stored = global.localStorage?.getItem(FILTER_PRESET_STORAGE_KEY) ?? '';
+      if (stored) {
+        try {
+          const json = JSON.parse(stored);
+          if (json && typeof json === 'object') {
+            parsed = json;
+          } else {
+            dirty = true;
+          }
+        } catch (err) {
+          console.warn('[kanban] failed to parse filter presets storage', err);
+          dirty = true;
+          parsed = {};
+        }
+      }
+    } catch (err) {
+      console.warn('[kanban] failed to read filter presets storage', err);
+      parsed = {};
+    }
+
+    const map = {};
+    Object.keys(parsed).forEach(key => {
+      const list = Array.isArray(parsed[key]) ? parsed[key] : [];
+      if (!Array.isArray(parsed[key])) dirty = true;
+      const sanitized = [];
+      list.forEach(item => {
+        const preset = sanitizePresetEntry(item);
+        if (preset) {
+          sanitized.push(preset);
+        } else {
+          dirty = true;
+        }
+      });
+      map[key] = sanitized;
+      if (sanitized.length !== list.length) dirty = true;
+    });
+
+    return { map, dirty };
+  }
+
+  function writeFilterPresetStore(store) {
+    try {
+      global.localStorage?.setItem(FILTER_PRESET_STORAGE_KEY, JSON.stringify(store));
+    } catch (err) {
+      console.warn('[kanban] failed to store filter presets', err);
+    }
+  }
+
+  function clonePresetEntry(preset) {
+    if (!preset || typeof preset !== 'object') return null;
+    const cloned = {
+      name: preset.name,
+      filters: clonePlain(preset.filters ?? {}),
+    };
+    if (Number.isFinite(preset.updatedAt)) {
+      cloned.updatedAt = preset.updatedAt;
+    }
+    if (Number.isFinite(preset.lastAppliedAt)) {
+      cloned.lastAppliedAt = preset.lastAppliedAt;
+    }
+    return cloned;
+  }
+
+  function clonePresetList(list) {
+    if (!Array.isArray(list)) return [];
+    return list.map(item => clonePresetEntry(item)).filter(Boolean);
+  }
+
+  function loadFilterPresets(viewKey) {
+    const key = String(viewKey ?? '').trim();
+    if (!key) {
+      return { presets: [], lastApplied: null };
+    }
+    const { map, dirty } = readFilterPresetStore();
+    if (dirty) {
+      writeFilterPresetStore(map);
+    }
+    const list = Array.isArray(map[key]) ? map[key] : [];
+    const presets = clonePresetList(list);
+    let lastApplied = null;
+    presets.forEach(preset => {
+      if (!preset) return;
+      const ts = Number(preset.lastAppliedAt);
+      if (!Number.isFinite(ts)) return;
+      if (!lastApplied || ts > Number(lastApplied.lastAppliedAt || 0)) {
+        lastApplied = preset;
+      }
+    });
+    return { presets, lastApplied };
+  }
+
+  function saveFilterPreset(viewKey, presetName, filters, options = {}) {
+    const key = String(viewKey ?? '').trim();
+    const name = String(presetName ?? '').trim();
+    if (!key || !name) {
+      return { presets: [], saved: null };
+    }
+    const { map } = readFilterPresetStore();
+    const list = Array.isArray(map[key]) ? map[key] : [];
+    const now = Date.now();
+    const normalizedFilters = clonePlain(filters ?? {});
+    const idx = list.findIndex(item => item?.name === name);
+    let entry;
+    if (idx >= 0) {
+      entry = { ...list[idx], name, filters: normalizedFilters, updatedAt: now };
+      if (options.markAsApplied !== false) {
+        entry.lastAppliedAt = now;
+      }
+      list[idx] = entry;
+    } else {
+      entry = { name, filters: normalizedFilters, updatedAt: now };
+      if (options.markAsApplied !== false) {
+        entry.lastAppliedAt = now;
+      }
+      list.push(entry);
+    }
+    map[key] = list;
+    writeFilterPresetStore(map);
+    return { presets: clonePresetList(list), saved: clonePresetEntry(entry) };
+  }
+
+  function deleteFilterPreset(viewKey, presetName) {
+    const key = String(viewKey ?? '').trim();
+    const name = String(presetName ?? '').trim();
+    if (!key || !name) {
+      return { presets: [], removed: false };
+    }
+    const { map, dirty } = readFilterPresetStore();
+    const list = Array.isArray(map[key]) ? map[key] : [];
+    const idx = list.findIndex(item => item?.name === name);
+    if (idx < 0) {
+      if (dirty) {
+        writeFilterPresetStore(map);
+      }
+      return { presets: clonePresetList(list), removed: false };
+    }
+    list.splice(idx, 1);
+    map[key] = list;
+    writeFilterPresetStore(map);
+    return { presets: clonePresetList(list), removed: true };
+  }
+
+  function applyFilterPreset(viewKey, presetName, applyFn) {
+    const key = String(viewKey ?? '').trim();
+    const name = String(presetName ?? '').trim();
+    if (!key || !name || typeof applyFn !== 'function') {
+      return { presets: [], applied: null };
+    }
+    const { map, dirty } = readFilterPresetStore();
+    const list = Array.isArray(map[key]) ? map[key] : [];
+    const idx = list.findIndex(item => item?.name === name);
+    if (idx < 0) {
+      if (dirty) {
+        writeFilterPresetStore(map);
+      }
+      return { presets: clonePresetList(list), applied: null };
+    }
+    const target = list[idx];
+    const payload = clonePlain(target.filters ?? {});
+    const result = applyFn(payload, clonePresetEntry(target));
+    if (result === false) {
+      if (dirty) {
+        writeFilterPresetStore(map);
+      }
+      return { presets: clonePresetList(list), applied: null };
+    }
+    target.lastAppliedAt = Date.now();
+    map[key] = list;
+    writeFilterPresetStore(map);
+    return {
+      presets: clonePresetList(list),
+      applied: clonePresetEntry(target),
+    };
+  }
 
   function ready(fn) {
     if (document.readyState !== 'loading') {
@@ -873,6 +1096,10 @@
     getDueState,
     summarizeAssigneeWorkload,
     createWorkloadSummary,
+    loadFilterPresets,
+    saveFilterPreset,
+    deleteFilterPreset,
+    applyFilterPreset,
     PRIORITY_DEFAULT_OPTIONS,
     DEFAULT_STATUSES,
     UNSET_STATUS_LABEL,

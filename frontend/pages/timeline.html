@@ -38,6 +38,17 @@
             <option value="__UNASSIGNED__">（未割り当て）</option>
           </select>
         </div>
+        <div class="field">
+          <label for="timeline-preset">プリセット</label>
+          <div class="preset-actions" style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+            <select id="timeline-preset" style="min-width:160px;">
+              <option value="">（プリセット未選択）</option>
+            </select>
+            <button id="btn-timeline-preset-apply" class="btn" type="button">呼び出し</button>
+            <button id="btn-timeline-preset-save" class="btn" type="button">保存</button>
+            <button id="btn-timeline-preset-delete" class="btn btn-danger" type="button">削除</button>
+          </div>
+        </div>
         <button id="btn-apply" class="btn btn-primary">表示を更新</button>
         <div class="quick">
           <button data-shift="-7">◀ 前週</button>

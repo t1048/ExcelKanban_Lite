@@ -10,6 +10,10 @@ const {
   createPriorityHelper,
   setupRuntime,
   setupDragViewportAutoScroll,
+  loadFilterPresets,
+  saveFilterPreset,
+  deleteFilterPreset,
+  applyFilterPreset,
   PRIORITY_DEFAULT_OPTIONS,
   DEFAULT_STATUSES,
   UNSET_STATUS_LABEL,
@@ -24,6 +28,29 @@ let VALIDATIONS = {};
 let CURRENT_EDIT = null;
 let CURRENT_DRAG = null;
 let cleanupAutoScroll = null;
+
+let FILTERS = {
+  month: '',
+};
+
+const FILTER_PRESET_VIEW_KEY = 'calendar';
+let FILTER_PRESETS = [];
+let ACTIVE_FILTER_PRESET = '';
+let PRESET_INITIAL_APPLIED = false;
+
+function initializeFilterPresetsState() {
+  try {
+    const { presets, lastApplied } = loadFilterPresets(FILTER_PRESET_VIEW_KEY) || {};
+    FILTER_PRESETS = Array.isArray(presets) ? presets : [];
+    ACTIVE_FILTER_PRESET = lastApplied?.name || '';
+  } catch (err) {
+    console.warn('[calendar] failed to load filter presets', err);
+    FILTER_PRESETS = [];
+    ACTIVE_FILTER_PRESET = '';
+  }
+}
+
+initializeFilterPresetsState();
 
 const INITIAL_LOAD_FLAG_KEY = 'kanban:excelLoaded';
 
@@ -58,6 +85,167 @@ const priorityHelper = createPriorityHelper({
 const applyPriorityOptions = (selectEl, currentValue, preferDefault = false) => (
   priorityHelper.applyOptions(selectEl, currentValue, preferDefault)
 );
+
+function syncFiltersFromUI() {
+  const monthInput = document.getElementById('month-picker');
+  FILTERS.month = monthInput ? (monthInput.value || '') : '';
+}
+
+function applyFiltersToUI() {
+  const monthInput = document.getElementById('month-picker');
+  if (monthInput) {
+    monthInput.value = FILTERS.month || '';
+  }
+}
+
+function serializeFiltersForPreset() {
+  return {
+    month: FILTERS.month || '',
+  };
+}
+
+function applyPresetFilters(raw) {
+  const data = raw && typeof raw === 'object' ? raw : {};
+  const monthValue = String(data.month ?? '').trim();
+  FILTERS.month = monthValue;
+  applyFiltersToUI();
+}
+
+function maybeApplyInitialPreset() {
+  if (PRESET_INITIAL_APPLIED) return;
+  PRESET_INITIAL_APPLIED = true;
+  if (!ACTIVE_FILTER_PRESET) return;
+  const preset = FILTER_PRESETS.find(item => item?.name === ACTIVE_FILTER_PRESET);
+  if (!preset) {
+    ACTIVE_FILTER_PRESET = '';
+    return;
+  }
+  applyPresetFilters(preset.filters);
+}
+
+function ensureFilterPresetHandlers() {
+  const select = document.getElementById('calendar-preset');
+  const applyBtn = document.getElementById('btn-calendar-preset-apply');
+  const saveBtn = document.getElementById('btn-calendar-preset-save');
+  const deleteBtn = document.getElementById('btn-calendar-preset-delete');
+  if (!select || !applyBtn || !saveBtn || !deleteBtn) return;
+  if (select.dataset.bound === '1') return;
+  select.dataset.bound = '1';
+
+  const refreshButtonState = () => {
+    const selected = select.value;
+    const exists = Boolean(selected) && FILTER_PRESETS.some(preset => preset?.name === selected);
+    applyBtn.disabled = !exists;
+    deleteBtn.disabled = !exists;
+  };
+
+  select.addEventListener('change', () => {
+    ACTIVE_FILTER_PRESET = select.value;
+    refreshButtonState();
+  });
+
+  applyBtn.addEventListener('click', () => {
+    const targetName = select.value;
+    if (!targetName) {
+      alert('プリセットを選択してください。');
+      return;
+    }
+    const result = applyFilterPreset(FILTER_PRESET_VIEW_KEY, targetName, (filters) => {
+      applyPresetFilters(filters);
+      return true;
+    });
+    FILTER_PRESETS = result.presets;
+    if (result.applied) {
+      ACTIVE_FILTER_PRESET = result.applied.name;
+      PRESET_INITIAL_APPLIED = true;
+      applyFiltersToUI();
+      updateMonthLabel();
+      renderCalendar();
+      renderBacklog();
+    } else {
+      alert('選択したプリセットが見つかりません。');
+      updateFilterPresetUI();
+    }
+  });
+
+  saveBtn.addEventListener('click', () => {
+    const defaultName = select.value || '';
+    const name = window.prompt('プリセット名を入力してください', defaultName);
+    if (name === null) return;
+    const trimmed = name.trim();
+    if (!trimmed) {
+      alert('プリセット名を入力してください。');
+      return;
+    }
+    syncFiltersFromUI();
+    const payload = serializeFiltersForPreset();
+    const result = saveFilterPreset(FILTER_PRESET_VIEW_KEY, trimmed, payload);
+    FILTER_PRESETS = result.presets;
+    if (result.saved) {
+      ACTIVE_FILTER_PRESET = result.saved.name;
+      PRESET_INITIAL_APPLIED = true;
+    }
+    updateFilterPresetUI();
+  });
+
+  deleteBtn.addEventListener('click', () => {
+    const targetName = select.value;
+    if (!targetName) {
+      alert('削除するプリセットを選択してください。');
+      return;
+    }
+    if (!window.confirm(`プリセット「${targetName}」を削除しますか？`)) {
+      return;
+    }
+    const result = deleteFilterPreset(FILTER_PRESET_VIEW_KEY, targetName);
+    FILTER_PRESETS = result.presets;
+    if (ACTIVE_FILTER_PRESET === targetName) {
+      ACTIVE_FILTER_PRESET = '';
+    }
+    updateFilterPresetUI();
+  });
+
+  refreshButtonState();
+}
+
+function updateFilterPresetUI() {
+  ensureFilterPresetHandlers();
+  const select = document.getElementById('calendar-preset');
+  const applyBtn = document.getElementById('btn-calendar-preset-apply');
+  const deleteBtn = document.getElementById('btn-calendar-preset-delete');
+  if (!select) return;
+
+  const previousValue = select.value;
+  select.innerHTML = '';
+
+  const placeholder = document.createElement('option');
+  placeholder.value = '';
+  placeholder.textContent = '（プリセット未選択）';
+  select.appendChild(placeholder);
+
+  FILTER_PRESETS.forEach(preset => {
+    if (!preset || typeof preset.name !== 'string') return;
+    const opt = document.createElement('option');
+    opt.value = preset.name;
+    opt.textContent = preset.name;
+    select.appendChild(opt);
+  });
+
+  let nextValue = '';
+  if (ACTIVE_FILTER_PRESET && FILTER_PRESETS.some(p => p?.name === ACTIVE_FILTER_PRESET)) {
+    nextValue = ACTIVE_FILTER_PRESET;
+  } else if (FILTER_PRESETS.some(p => p?.name === previousValue)) {
+    nextValue = previousValue;
+    ACTIVE_FILTER_PRESET = previousValue;
+  } else {
+    ACTIVE_FILTER_PRESET = '';
+  }
+
+  select.value = nextValue;
+  const hasSelection = Boolean(select.value);
+  if (applyBtn) applyBtn.disabled = !hasSelection;
+  if (deleteBtn) deleteBtn.disabled = !hasSelection;
+}
 
 setupRuntime({
   mockApiFactory: createMockApi,
@@ -122,9 +310,13 @@ async function init(force = false) {
   }
 
   ensureMonthDefault();
+  maybeApplyInitialPreset();
+  applyFiltersToUI();
+  syncFiltersFromUI();
   renderLegend();
   renderCalendar();
   renderBacklog();
+  updateFilterPresetUI();
 }
 
 async function applyStateFromPayload(payload, { fallbackToApi = false } = {}) {
@@ -174,9 +366,13 @@ async function applyStateFromPayload(payload, { fallbackToApi = false } = {}) {
   }
 
   ensureMonthDefault();
+  maybeApplyInitialPreset();
+  applyFiltersToUI();
+  syncFiltersFromUI();
   renderLegend();
   renderCalendar();
   renderBacklog();
+  updateFilterPresetUI();
 }
 
 function wireControls() {
@@ -193,9 +389,11 @@ function wireControls() {
     if (!target) return;
     target.setMonth(target.getMonth() + delta);
     monthInput.value = formatMonthValue(target);
+    FILTERS.month = monthInput.value || '';
     updateMonthLabel();
     renderCalendar();
     renderBacklog();
+    updateFilterPresetUI();
   };
 
   if (prevBtn) {
@@ -206,9 +404,11 @@ function wireControls() {
   }
   if (monthInput) {
     monthInput.addEventListener('change', () => {
+      FILTERS.month = monthInput.value || '';
       updateMonthLabel();
       renderCalendar();
       renderBacklog();
+      updateFilterPresetUI();
     });
   }
 
@@ -272,6 +472,7 @@ function ensureMonthDefault() {
     .sort((a, b) => a - b);
   const base = validDueDates.length ? validDueDates[0] : new Date();
   monthInput.value = formatMonthValue(base);
+  FILTERS.month = monthInput.value || '';
   updateMonthLabel();
 }
 
@@ -337,6 +538,7 @@ function renderCalendar() {
   const container = document.getElementById('calendar-grid');
   if (!container) return;
 
+  syncFiltersFromUI();
   const range = getCalendarRange();
   if (!range) {
     container.innerHTML = '<div class="message">表示する月を選択してください。</div>';
@@ -655,8 +857,9 @@ function formatMonthValue(date) {
 
 function getCalendarRange() {
   const monthInput = document.getElementById('month-picker');
-  if (!monthInput || !monthInput.value) return null;
-  const monthDate = parseMonthValue(monthInput.value);
+  const value = FILTERS.month || (monthInput ? monthInput.value : '');
+  if (!value) return null;
+  const monthDate = parseMonthValue(value);
   if (!monthDate) return null;
   const monthStart = new Date(monthDate.getFullYear(), monthDate.getMonth(), 1);
   monthStart.setHours(0, 0, 0, 0);
@@ -672,11 +875,16 @@ function getCalendarRange() {
 function updateMonthLabel() {
   const monthInput = document.getElementById('month-picker');
   const label = document.getElementById('calendar-current');
-  if (!monthInput || !label || !monthInput.value) {
-    if (label) label.textContent = '';
+  const value = FILTERS.month || (monthInput ? monthInput.value : '');
+  if (!label) return;
+  if (!value) {
+    label.textContent = '';
     return;
   }
-  const monthDate = parseMonthValue(monthInput.value);
+  if (monthInput) {
+    monthInput.value = value;
+  }
+  const monthDate = parseMonthValue(value);
   if (!monthDate) {
     label.textContent = '';
     return;
