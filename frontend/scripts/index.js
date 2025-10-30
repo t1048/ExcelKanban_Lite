@@ -13,16 +13,23 @@ const {
   parseISO,
   getDueState,
   createWorkloadSummary,
-  loadFilterPresets,
-  saveFilterPreset,
-  deleteFilterPreset,
-  applyFilterPreset,
   PRIORITY_DEFAULT_OPTIONS,
   DEFAULT_STATUSES,
   UNSET_STATUS_LABEL,
   getPriorityLevel,
   getDueFilterPreset,
 } = window.TaskAppCommon;
+
+const {
+  constants: {
+    ASSIGNEE_FILTER_ALL,
+    ASSIGNEE_FILTER_UNASSIGNED,
+    ASSIGNEE_UNASSIGNED_LABEL,
+    CATEGORY_FILTER_ALL,
+    CATEGORY_FILTER_MINOR_ALL,
+  },
+  createController: createFilterController,
+} = window.TaskFilterUI;
 
 let api;                  // 実際に使う API （後で差し替える）
 let RUN_MODE = 'mock';    // 'mock' | 'pywebview'
@@ -56,20 +63,7 @@ function resetInitialExcelLoadFlag() {
 
 /* ===================== 状態 ===================== */
 const VALIDATION_COLUMNS = ["ステータス", "大分類", "中分類", "タスク", "担当者", "優先度", "期限", "備考"];
-const ASSIGNEE_FILTER_ALL = '__ALL__';
-const ASSIGNEE_FILTER_UNASSIGNED = '__UNASSIGNED__';
-
-const ASSIGNEE_UNASSIGNED_LABEL = '（未割り当て）';
-const CATEGORY_FILTER_ALL = '__CATEGORY_ALL__';
-const CATEGORY_FILTER_MINOR_ALL = '__CATEGORY_MINOR_ALL__';
 let STATUSES = [];
-let FILTERS = {
-  assignee: ASSIGNEE_FILTER_ALL,
-  statuses: new Set(),              // 初期化時に全ONにする
-  keyword: '',
-  date: { mode: 'none', from: '', to: '' },
-  category: { major: CATEGORY_FILTER_ALL, minor: CATEGORY_FILTER_MINOR_ALL }
-};
 let TASKS = [];
 let CURRENT_EDIT = null;
 let VALIDATIONS = {};
@@ -84,261 +78,20 @@ const applyPriorityOptions = (selectEl, currentValue, preferDefault = false) => 
 );
 
 const FILTER_PRESET_VIEW_KEY = 'kanban-board';
-let FILTER_PRESETS = [];
-let ACTIVE_FILTER_PRESET = '';
-let PRESET_INITIAL_APPLIED = false;
+let filterController;
 
-function initializeFilterPresetsState() {
-  try {
-    const { presets, lastApplied } = loadFilterPresets(FILTER_PRESET_VIEW_KEY) || {};
-    FILTER_PRESETS = Array.isArray(presets) ? presets : [];
-    ACTIVE_FILTER_PRESET = lastApplied?.name || '';
-  } catch (err) {
-    console.warn('[kanban] failed to load filter presets', err);
-    FILTER_PRESETS = [];
-    ACTIVE_FILTER_PRESET = '';
-  }
-}
-
-initializeFilterPresetsState();
-
-function createDefaultFilterState() {
-  const statuses = Array.isArray(STATUSES) ? STATUSES : [];
-  const nextStatuses = new Set();
-  statuses.forEach(status => nextStatuses.add(status));
-  if (nextStatuses.size === 0) {
-    statuses.forEach(status => nextStatuses.add(status));
-  }
-  return {
-    assignee: ASSIGNEE_FILTER_ALL,
-    statuses: nextStatuses,
-    keyword: '',
-    date: { mode: 'none', from: '', to: '' },
-    category: { major: CATEGORY_FILTER_ALL, minor: CATEGORY_FILTER_MINOR_ALL }
-  };
-}
-
-function serializeFiltersForPreset() {
-  const result = {
-    assignee: FILTERS.assignee,
-    statuses: [],
-    keyword: String(FILTERS.keyword ?? ''),
-    date: {
-      mode: FILTERS.date?.mode || 'none',
-      from: FILTERS.date?.from || '',
-      to: FILTERS.date?.to || '',
-    },
-    category: {
-      major: FILTERS.category?.major ?? CATEGORY_FILTER_ALL,
-      minor: FILTERS.category?.minor ?? CATEGORY_FILTER_MINOR_ALL,
-    }
-  };
-
-  const seen = new Set();
-  const orderedStatuses = Array.isArray(STATUSES) ? STATUSES.slice() : [];
-  orderedStatuses.forEach(status => {
-    const text = String(status ?? '').trim();
-    if (!text || seen.has(text)) return;
-    if (FILTERS.statuses.has(text)) {
-      result.statuses.push(text);
-      seen.add(text);
-    }
-  });
-  if (FILTERS.statuses.has(UNSET_STATUS_LABEL) && !seen.has(UNSET_STATUS_LABEL)) {
-    result.statuses.push(UNSET_STATUS_LABEL);
-    seen.add(UNSET_STATUS_LABEL);
-  }
-  FILTERS.statuses.forEach(status => {
-    const text = String(status ?? '').trim();
-    if (!text || seen.has(text)) return;
-    result.statuses.push(text);
-    seen.add(text);
-  });
-
-  return result;
-}
-
-function applyPresetFilters(raw) {
-  const data = raw && typeof raw === 'object' ? raw : {};
-  const next = createDefaultFilterState();
-
-  const assigneeRaw = String(data.assignee ?? '').trim();
-  if (!assigneeRaw) {
-    next.assignee = ASSIGNEE_FILTER_ALL;
-  } else if (assigneeRaw === ASSIGNEE_FILTER_UNASSIGNED) {
-    next.assignee = ASSIGNEE_FILTER_UNASSIGNED;
-  } else {
-    next.assignee = assigneeRaw;
-  }
-
-  const availableStatuses = new Set(Array.isArray(STATUSES) ? STATUSES.map(s => String(s ?? '').trim()) : []);
-  availableStatuses.add(UNSET_STATUS_LABEL);
-  const presetStatuses = Array.isArray(data.statuses) ? data.statuses : [];
-  const assigned = new Set();
-  presetStatuses.forEach(value => {
-    const text = String(value ?? '').trim();
-    if (!text || assigned.has(text)) return;
-    if (availableStatuses.has(text)) {
-      assigned.add(text);
-    }
-  });
-  if (assigned.size === 0) {
-    availableStatuses.forEach(status => {
-      if (status) assigned.add(status);
-    });
-  }
-  next.statuses = assigned;
-
-  next.keyword = String(data.keyword ?? '');
-
-  const allowedModes = new Set(['none', 'range', 'before', 'after']);
-  const dateRaw = data.date && typeof data.date === 'object' ? data.date : {};
-  const mode = allowedModes.has(dateRaw.mode) ? dateRaw.mode : 'none';
-  next.date = {
-    mode,
-    from: String(dateRaw.from ?? ''),
-    to: String(dateRaw.to ?? ''),
-  };
-
-  const categoryRaw = data.category && typeof data.category === 'object' ? data.category : {};
-  const major = String(categoryRaw.major ?? '').trim() || CATEGORY_FILTER_ALL;
-  const minor = String(categoryRaw.minor ?? '').trim() || CATEGORY_FILTER_MINOR_ALL;
-  next.category = { major, minor };
-
-  FILTERS = next;
-}
-
-function maybeApplyInitialPreset() {
-  if (PRESET_INITIAL_APPLIED) return;
-  PRESET_INITIAL_APPLIED = true;
-  if (!ACTIVE_FILTER_PRESET) return;
-  const preset = FILTER_PRESETS.find(item => item?.name === ACTIVE_FILTER_PRESET);
-  if (!preset) {
-    ACTIVE_FILTER_PRESET = '';
-    return;
-  }
-  applyPresetFilters(preset.filters);
-}
-
-function ensureFilterPresetHandlers() {
-  const select = document.getElementById('flt-preset');
-  const applyBtn = document.getElementById('btn-preset-apply');
-  const saveBtn = document.getElementById('btn-preset-save');
-  const deleteBtn = document.getElementById('btn-preset-delete');
-  if (!select || !applyBtn || !saveBtn || !deleteBtn) return;
-  if (select.dataset.bound === '1') return;
-  select.dataset.bound = '1';
-
-  const refreshButtonState = () => {
-    const selected = select.value;
-    const exists = Boolean(selected) && FILTER_PRESETS.some(preset => preset?.name === selected);
-    applyBtn.disabled = !exists;
-    deleteBtn.disabled = !exists;
-  };
-
-  select.addEventListener('change', () => {
-    ACTIVE_FILTER_PRESET = select.value;
-    refreshButtonState();
-  });
-
-  applyBtn.addEventListener('click', () => {
-    const targetName = select.value;
-    if (!targetName) {
-      alert('プリセットを選択してください。');
-      return;
-    }
-    const result = applyFilterPreset(FILTER_PRESET_VIEW_KEY, targetName, (filters) => {
-      applyPresetFilters(filters);
-      return true;
-    });
-    FILTER_PRESETS = result.presets;
-    if (result.applied) {
-      ACTIVE_FILTER_PRESET = result.applied.name;
-      PRESET_INITIAL_APPLIED = true;
-      buildFiltersUI();
+function initFilterController() {
+  const container = document.getElementById('filters-bar');
+  filterController = createFilterController({
+    container,
+    viewKey: FILTER_PRESET_VIEW_KEY,
+    onChange: () => {
       renderBoard();
-    } else {
-      alert('選択したプリセットが見つかりません。');
-      updateFilterPresetUI();
-    }
+    },
+    normalizeStatusLabel,
+    parseISO,
+    getDueFilterPreset,
   });
-
-  saveBtn.addEventListener('click', () => {
-    const defaultName = select.value || '';
-    const name = window.prompt('プリセット名を入力してください', defaultName);
-    if (name === null) return;
-    const trimmed = name.trim();
-    if (!trimmed) {
-      alert('プリセット名を入力してください。');
-      return;
-    }
-    const payload = serializeFiltersForPreset();
-    const result = saveFilterPreset(FILTER_PRESET_VIEW_KEY, trimmed, payload);
-    FILTER_PRESETS = result.presets;
-    if (result.saved) {
-      ACTIVE_FILTER_PRESET = result.saved.name;
-      PRESET_INITIAL_APPLIED = true;
-    }
-    updateFilterPresetUI();
-  });
-
-  deleteBtn.addEventListener('click', () => {
-    const targetName = select.value;
-    if (!targetName) {
-      alert('削除するプリセットを選択してください。');
-      return;
-    }
-    if (!window.confirm(`プリセット「${targetName}」を削除しますか？`)) {
-      return;
-    }
-    const result = deleteFilterPreset(FILTER_PRESET_VIEW_KEY, targetName);
-    FILTER_PRESETS = result.presets;
-    if (ACTIVE_FILTER_PRESET === targetName) {
-      ACTIVE_FILTER_PRESET = '';
-    }
-    updateFilterPresetUI();
-  });
-
-  refreshButtonState();
-}
-
-function updateFilterPresetUI() {
-  const select = document.getElementById('flt-preset');
-  const applyBtn = document.getElementById('btn-preset-apply');
-  const deleteBtn = document.getElementById('btn-preset-delete');
-  ensureFilterPresetHandlers();
-  if (!select) return;
-
-  const previousValue = select.value;
-  select.innerHTML = '';
-
-  const placeholder = document.createElement('option');
-  placeholder.value = '';
-  placeholder.textContent = '（プリセット未選択）';
-  select.appendChild(placeholder);
-
-  FILTER_PRESETS.forEach(preset => {
-    if (!preset || typeof preset.name !== 'string') return;
-    const opt = document.createElement('option');
-    opt.value = preset.name;
-    opt.textContent = preset.name;
-    select.appendChild(opt);
-  });
-
-  let nextValue = '';
-  if (ACTIVE_FILTER_PRESET && FILTER_PRESETS.some(p => p?.name === ACTIVE_FILTER_PRESET)) {
-    nextValue = ACTIVE_FILTER_PRESET;
-  } else if (FILTER_PRESETS.some(p => p?.name === previousValue)) {
-    nextValue = previousValue;
-    ACTIVE_FILTER_PRESET = previousValue;
-  } else {
-    ACTIVE_FILTER_PRESET = '';
-  }
-
-  select.value = nextValue;
-  const hasSelection = Boolean(select.value);
-  if (applyBtn) applyBtn.disabled = !hasSelection;
-  if (deleteBtn) deleteBtn.disabled = !hasSelection;
 }
 
 const WORKLOAD_IN_PROGRESS_KEYWORDS = ['進行', '作業中', 'inprogress', 'wip'];
@@ -365,6 +118,8 @@ function workloadHighlightPredicate(entry) {
   return workloadInProgressCount(entry) > WORKLOAD_HEAVY_THRESHOLD;
 }
 
+initFilterController();
+
 const workloadSummary = createWorkloadSummary({
   container: document.getElementById('workload-summary'),
   getStatuses: () => STATUSES,
@@ -372,21 +127,23 @@ const workloadSummary = createWorkloadSummary({
   unassignedKey: ASSIGNEE_FILTER_UNASSIGNED,
   unassignedLabel: ASSIGNEE_UNASSIGNED_LABEL,
   allKey: ASSIGNEE_FILTER_ALL,
-  getActiveAssignee: () => FILTERS.assignee,
+  getActiveAssignee: () => filterController?.getFilters().assignee ?? ASSIGNEE_FILTER_ALL,
   getDueState,
   highlightPredicate: workloadHighlightPredicate,
   onSelectAssignee: (value) => {
     const next = (() => {
+      const current = filterController?.getFilters().assignee ?? ASSIGNEE_FILTER_ALL;
       if (!value || value === ASSIGNEE_FILTER_ALL) return ASSIGNEE_FILTER_ALL;
-      if (FILTERS.assignee === value) return ASSIGNEE_FILTER_ALL;
+      if (current === value) return ASSIGNEE_FILTER_ALL;
       return value;
     })();
-    FILTERS.assignee = next;
-    const select = document.getElementById('flt-assignee');
-    if (select) {
-      select.value = next;
+    if (filterController) {
+      filterController.setAssignee(next);
+      const select = document.getElementById('flt-assignee');
+      if (select) {
+        select.value = next;
+      }
     }
-    renderBoard();
   },
 });
 
@@ -417,7 +174,6 @@ setupRuntime({
 async function applyStateFromPayload(payload, options = {}) {
   const { preserveFilters = true, fallbackToApi = true } = options;
   const data = normalizeStatePayload(payload);
-  const prevSelection = preserveFilters ? new Set(FILTERS.statuses) : new Set();
 
   if (Array.isArray(data.tasks)) {
     TASKS = sanitizeTaskList(data.tasks);
@@ -436,10 +192,13 @@ async function applyStateFromPayload(payload, options = {}) {
   }
 
   applyValidationState(validationPayload);
-  syncFilterStatuses(prevSelection);
-  maybeApplyInitialPreset();
+  filterController.updateData({
+    tasks: TASKS,
+    statuses: STATUSES,
+    validations: VALIDATIONS,
+    preserveStatusSelection: preserveFilters,
+  });
   renderBoard();
-  buildFiltersUI();
 }
 
 window.__kanban_receive_update = (payload) => {
@@ -521,28 +280,6 @@ function applyValidationState(raw) {
   STATUSES = ordered;
 }
 
-function syncFilterStatuses(prevSelection) {
-  const statuses = Array.isArray(STATUSES) ? STATUSES : [];
-  const base = prevSelection instanceof Set ? prevSelection : new Set();
-  const next = new Set();
-  statuses.forEach(s => {
-    if (base.has(s)) next.add(s);
-  });
-  const hasUnset = statuses.includes(UNSET_STATUS_LABEL);
-  if (hasUnset) {
-    const hadUnset = base.has(UNSET_STATUS_LABEL);
-    const emptyExists = Array.isArray(TASKS) && TASKS.some(t => !String(t?.ステータス ?? '').trim());
-    if (hadUnset || emptyExists || base.size === 0) {
-      next.add(UNSET_STATUS_LABEL);
-    }
-  }
-  if (next.size === 0) {
-    statuses.forEach(s => next.add(s));
-  }
-  FILTERS.statuses = next;
-}
-
-/* ===================== 初期化 ===================== */
 async function init(force = false) {
   let payload = {};
   if (force) {
@@ -721,196 +458,6 @@ function collectCategoryOptions() {
 
   return { majorList, minorMap, allMinors };
 }
-
-function buildFiltersUI() {
-  // ステータス（チェックボックス）
-  const wrap = document.getElementById('flt-statuses');
-  wrap.innerHTML = '';
-  if (FILTERS.statuses.size === 0) {
-    // 初期は全ON
-    STATUSES.forEach(s => FILTERS.statuses.add(s));
-  }
-  STATUSES.forEach(s => {
-    const id = 'st-' + btoa(unescape(encodeURIComponent(s))).replace(/=/g, '');
-    const lbl = document.createElement('label');
-    const cb = document.createElement('input');
-    cb.type = 'checkbox'; cb.id = id; cb.value = s; cb.checked = FILTERS.statuses.has(s);
-    cb.addEventListener('change', () => {
-      if (cb.checked) FILTERS.statuses.add(s); else FILTERS.statuses.delete(s);
-      renderBoard();
-    });
-    const span = document.createElement('span'); span.textContent = s;
-    lbl.appendChild(cb); lbl.appendChild(span);
-    wrap.appendChild(lbl);
-  });
-
-  // 大分類・中分類
-  const majorSel = document.getElementById('flt-major');
-  const minorSel = document.getElementById('flt-minor');
-  if (majorSel && minorSel) {
-    const { majorList, minorMap, allMinors } = collectCategoryOptions();
-    let currentMajor = FILTERS.category?.major ?? CATEGORY_FILTER_ALL;
-    let currentMinor = FILTERS.category?.minor ?? CATEGORY_FILTER_MINOR_ALL;
-
-    if (!majorList.includes(currentMajor)) {
-      currentMajor = CATEGORY_FILTER_ALL;
-      FILTERS.category.major = CATEGORY_FILTER_ALL;
-    }
-
-    const majorOptions = [
-      `<option value="${CATEGORY_FILTER_ALL}">（すべて）</option>`
-    ].concat(majorList.map(name => `<option value="${name}">${name}</option>`));
-    majorSel.innerHTML = majorOptions.join('');
-    majorSel.value = currentMajor;
-
-    const renderMinorOptions = ({ preserve = false } = {}) => {
-      const isAllMajor = currentMajor === CATEGORY_FILTER_ALL;
-      const majorsMinors = isAllMajor ? (allMinors || []) : (minorMap.get(currentMajor) || []);
-      const minorOptions = [
-        `<option value="${CATEGORY_FILTER_MINOR_ALL}">（すべて）</option>`
-      ].concat(majorsMinors.map(name => `<option value="${name}">${name}</option>`));
-      minorSel.innerHTML = minorOptions.join('');
-
-      if (!preserve) {
-        currentMinor = CATEGORY_FILTER_MINOR_ALL;
-      }
-
-      if (currentMinor !== CATEGORY_FILTER_MINOR_ALL && !majorsMinors.includes(currentMinor)) {
-        currentMinor = CATEGORY_FILTER_MINOR_ALL;
-      }
-
-      if (majorsMinors.length === 0) {
-        currentMinor = CATEGORY_FILTER_MINOR_ALL;
-        minorSel.disabled = true;
-      } else {
-        minorSel.disabled = false;
-      }
-
-      FILTERS.category.minor = currentMinor;
-      minorSel.value = currentMinor;
-    };
-
-    renderMinorOptions({ preserve: true });
-
-    majorSel.onchange = () => {
-      currentMajor = majorSel.value;
-      FILTERS.category.major = currentMajor;
-      if (currentMajor !== CATEGORY_FILTER_ALL) {
-        currentMinor = CATEGORY_FILTER_MINOR_ALL;
-      }
-      renderMinorOptions({ preserve: currentMajor === CATEGORY_FILTER_ALL });
-      renderBoard();
-    };
-
-    minorSel.onchange = () => {
-      currentMinor = minorSel.value;
-      FILTERS.category.minor = currentMinor;
-      renderBoard();
-    };
-  }
-
-  // 担当者（セレクト）
-  const sel = document.getElementById('flt-assignee');
-  const selected = FILTERS.assignee;
-  const list = uniqAssignees();
-  const options = [
-    `<option value="${ASSIGNEE_FILTER_ALL}">（全員）</option>`,
-    `<option value="${ASSIGNEE_FILTER_UNASSIGNED}">${ASSIGNEE_UNASSIGNED_LABEL}</option>`
-  ].concat(list.map(a => `<option value="${a}">${a}</option>`));
-  sel.innerHTML = options.join('');
-  if (selected === ASSIGNEE_FILTER_UNASSIGNED) {
-    sel.value = ASSIGNEE_FILTER_UNASSIGNED;
-  } else if (list.includes(selected)) {
-    sel.value = selected;
-  } else {
-    sel.value = ASSIGNEE_FILTER_ALL;
-  }
-  sel.onchange = () => { FILTERS.assignee = sel.value; renderBoard(); };
-
-  // キーワード
-  const keywordEl = document.getElementById('flt-keyword');
-  keywordEl.value = FILTERS.keyword || '';
-  keywordEl.oninput = () => {
-    FILTERS.keyword = keywordEl.value;
-    renderBoard();
-  };
-
-  // 期限（モード＆日付）
-  const modeSel = document.getElementById('flt-date-mode');
-  const fromEl = document.getElementById('flt-date-from');
-  const toEl = document.getElementById('flt-date-to');
-  const sepEl = document.getElementById('flt-date-sep');
-
-  // 既存値の反映
-  modeSel.value = FILTERS.date.mode || 'none';
-  fromEl.value = FILTERS.date.from || '';
-  toEl.value = FILTERS.date.to || '';
-
-  const updateVisibility = () => {
-    const m = modeSel.value;
-    if (m === 'none') {
-      fromEl.style.display = '';
-      toEl.style.display = 'none';
-      sepEl.style.display = 'none';
-    } else if (m === 'before') {
-      fromEl.style.display = '';
-      toEl.style.display = 'none';
-      sepEl.style.display = 'none';
-    } else if (m === 'after') {
-      fromEl.style.display = '';
-      toEl.style.display = 'none';
-      sepEl.style.display = 'none';
-    } else { // range
-      fromEl.style.display = '';
-      toEl.style.display = '';
-      sepEl.style.display = '';
-    }
-  };
-  updateVisibility();
-
-  modeSel.onchange = () => { FILTERS.date.mode = modeSel.value; updateVisibility(); renderBoard(); };
-  fromEl.onchange = () => { FILTERS.date.from = fromEl.value; renderBoard(); };
-  toEl.onchange = () => { FILTERS.date.to = toEl.value; renderBoard(); };
-
-  const applyDuePreset = (presetName) => {
-    const preset = getDueFilterPreset(presetName);
-    if (!preset) return;
-    FILTERS.date.mode = preset.mode;
-    FILTERS.date.from = preset.from;
-    FILTERS.date.to = preset.to;
-    modeSel.value = FILTERS.date.mode;
-    fromEl.value = FILTERS.date.from;
-    toEl.value = FILTERS.date.to;
-    updateVisibility();
-    renderBoard();
-  };
-
-  document.querySelectorAll('[data-due-preset]').forEach(btn => {
-    if (!btn || btn.dataset.bound === '1') return;
-    btn.dataset.bound = '1';
-    btn.addEventListener('click', () => {
-      applyDuePreset(btn.dataset.duePreset || '');
-    });
-  });
-
-  // 解除ボタン
-  document.getElementById('btn-clear-filters').onclick = () => {
-    FILTERS = {
-      assignee: ASSIGNEE_FILTER_ALL,
-      statuses: new Set(STATUSES),
-      keyword: '',
-      date: { mode: 'none', from: '', to: '' },
-      category: { major: CATEGORY_FILTER_ALL, minor: CATEGORY_FILTER_MINOR_ALL }
-    };
-    ACTIVE_FILTER_PRESET = '';
-    PRESET_INITIAL_APPLIED = true;
-    buildFiltersUI();
-    renderBoard();
-  };
-
-  updateFilterPresetUI();
-}
-
 
 const PRIORITY_LABEL_ORDER = new Map([
   ['最優先', 0],
@@ -1185,7 +732,6 @@ function openValidationModal() {
       });
 
       try {
-        const prevSelection = new Set(FILTERS.statuses);
         if (typeof api?.update_validations === 'function') {
           const res = await api.update_validations(payload);
           if (res?.statuses && Array.isArray(res.statuses)) {
@@ -1196,10 +742,14 @@ function openValidationModal() {
         } else {
           applyValidationState(payload);
         }
-        syncFilterStatuses(prevSelection);
+        filterController.updateData({
+          tasks: TASKS,
+          statuses: STATUSES,
+          validations: VALIDATIONS,
+          preserveStatusSelection: true,
+        });
         closeValidationModal();
         renderBoard();
-        buildFiltersUI();
       } catch (err) {
         alert('入力規則の保存に失敗: ' + (err?.message || err));
       }
@@ -1218,70 +768,7 @@ function closeValidationModal() {
 }
 
 function getFilteredTasks() {
-  const assignee = FILTERS.assignee;
-  const statuses = FILTERS.statuses;
-  const df = FILTERS.date;
-  const keyword = (FILTERS.keyword || '').trim().toLowerCase();
-  const majorFilter = FILTERS.category?.major ?? CATEGORY_FILTER_ALL;
-  const minorFilter = FILTERS.category?.minor ?? CATEGORY_FILTER_MINOR_ALL;
-
-  const shouldFilterMajor = majorFilter !== CATEGORY_FILTER_ALL;
-  const shouldFilterMinor = minorFilter !== CATEGORY_FILTER_MINOR_ALL;
-
-  return TASKS.filter(t => {
-    if (shouldFilterMajor || shouldFilterMinor) {
-      const major = String(t.大分類 ?? '').trim();
-      const minor = String(t.中分類 ?? '').trim();
-
-      if (shouldFilterMajor && major !== majorFilter) return false;
-      if (shouldFilterMinor && minor !== minorFilter) return false;
-    }
-
-    // 担当者
-    const who = String(t.担当者 ?? '').trim();
-    if (assignee === ASSIGNEE_FILTER_UNASSIGNED) {
-      if (who) return false;
-    } else if (assignee !== ASSIGNEE_FILTER_ALL) {
-      if (who !== assignee) return false;
-    }
-    // ステータス
-    const normalizedStatus = normalizeStatusLabel(t.ステータス);
-    if (!statuses.has(normalizedStatus)) return false;
-
-    // キーワード（タスク・備考）
-    if (keyword) {
-      const title = String(t.タスク ?? '').toLowerCase();
-      const note = String(t.備考 ?? '').toLowerCase();
-      if (!title.includes(keyword) && !note.includes(keyword)) return false;
-    }
-
-    // 期限
-    if (df.mode === 'none') return true;
-    const due = parseISO(t.期限 || '');
-    if (!due) return false; // 期限が無いカードは条件指定時は除外
-
-    if (df.mode === 'before') {
-      const d = parseISO(df.from);
-      if (!d) return true; // 入力未指定なら全通し
-      // 期限 <= 指定日
-      return (due.getTime() <= d.getTime());
-    }
-    if (df.mode === 'after') {
-      const d = parseISO(df.from);
-      if (!d) return true;
-      // 期限 >= 指定日
-      return (due.getTime() >= d.getTime());
-    }
-    if (df.mode === 'range') {
-      const f = parseISO(df.from);
-      const t2 = parseISO(df.to);
-      if (f && t2) return (f.getTime() <= due.getTime() && due.getTime() <= t2.getTime());
-      if (f && !t2) return (f.getTime() <= due.getTime());
-      if (!f && t2) return (due.getTime() <= t2.getTime());
-      return true;
-    }
-    return true;
-  });
+  return filterController.applyFilters(TASKS);
 }
 
 
@@ -1453,7 +940,14 @@ function openModal(task, { mode }) {
           TASKS = sanitizeTaskList(remaining);
         }
         CURRENT_EDIT = null;
-        closeModal(); renderBoard(); buildFiltersUI();
+        closeModal();
+        filterController.updateData({
+          tasks: TASKS,
+          statuses: STATUSES,
+          validations: VALIDATIONS,
+          preserveStatusSelection: true,
+        });
+        renderBoard();
       } else {
         alert('削除できませんでした');
       }
@@ -1502,7 +996,14 @@ function openModal(task, { mode }) {
           }
         }
       }
-      closeModal(); renderBoard(); buildFiltersUI();
+      closeModal();
+      filterController.updateData({
+        tasks: TASKS,
+        statuses: STATUSES,
+        validations: VALIDATIONS,
+        preserveStatusSelection: true,
+      });
+      renderBoard();
     } catch (err) {
       alert('保存に失敗: ' + (err?.message || err));
     }

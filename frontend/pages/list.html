@@ -28,73 +28,7 @@
     <a href="calendar.html" class="btn btn-ghost">カレンダー</a>
   </div>
 
-  <div class="filters-bar" id="filters-bar">
-    <div class="filter">
-      <label for="flt-assignee">担当者</label>
-      <select id="flt-assignee">
-        <option value="__ALL__">（全員）</option>
-        <option value="__UNASSIGNED__">（未割り当て）</option>
-      </select>
-    </div>
-
-    <div class="filter">
-      <label for="flt-major">大分類</label>
-      <select id="flt-major">
-        <option value="__CATEGORY_ALL__">（すべて）</option>
-      </select>
-    </div>
-
-    <div class="filter">
-      <label for="flt-minor">中分類</label>
-      <select id="flt-minor" disabled>
-        <option value="__CATEGORY_MINOR_ALL__">（すべて）</option>
-      </select>
-    </div>
-
-    <div class="filter" style="min-width:260px;flex:1;">
-      <label>ステータス</label>
-      <div class="status-checks" id="flt-statuses"></div>
-    </div>
-
-    <div class="filter" style="min-width:260px;flex:1;">
-      <label for="flt-keyword">キーワード</label>
-      <input type="text" id="flt-keyword" placeholder="タスク・備考を検索" />
-    </div>
-
-    <div class="filter" style="min-width:320px;">
-      <label>期限</label>
-      <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
-        <select id="flt-date-mode" title="期限フィルター">
-          <option value="none">指定なし</option>
-          <option value="range">範囲指定</option>
-          <option value="before">指定日以前</option>
-          <option value="after">指定日以後</option>
-        </select>
-        <input type="date" id="flt-date-from" />
-        <span id="flt-date-sep" style="display:none;">〜</span>
-        <input type="date" id="flt-date-to" style="display:none;" />
-        <div class="due-quick-buttons" style="display:flex; gap:4px;">
-          <button type="button" class="btn btn-ghost" data-due-preset="this-week">今週まで</button>
-          <button type="button" class="btn btn-ghost" data-due-preset="next-week">来週まで</button>
-        </div>
-      </div>
-    </div>
-
-    <div class="filters-actions">
-      <div class="filter-preset">
-        <label for="list-preset">プリセット</label>
-        <div class="preset-actions" style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
-          <select id="list-preset" style="min-width:180px;">
-            <option value="">（プリセット未選択）</option>
-          </select>
-          <button id="btn-list-preset-apply" class="btn" type="button">呼び出し</button>
-          <button id="btn-list-preset-save" class="btn" type="button">保存</button>
-          <button id="btn-list-preset-delete" class="btn btn-danger" type="button">削除</button>
-        </div>
-      </div>
-      <button id="btn-clear-filters" class="btn">フィルター解除</button>
-    </div>
-  </div>
+  <div class="filters-bar" id="filters-bar"></div>
 
   <aside id="workload-summary" class="workload-summary" aria-labelledby="workload-summary-title">
     <div class="workload-summary-header">
@@ -198,6 +132,7 @@
   </div>
 
   <script src="../scripts/common.js" defer></script>
+  <script src="../scripts/filter-ui.js" defer></script>
   <script src="../scripts/list.js" defer></script>
 </body>
 
