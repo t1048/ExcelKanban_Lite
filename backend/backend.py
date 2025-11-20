@@ -885,20 +885,30 @@ class TaskStore:
                 df = df[ordered_columns]
                 self._column_order = ordered_columns
 
+                # No列を追加（連番を採番）
+                df_with_no = df.copy()
+                df_with_no.insert(0, 'No', range(1, len(df_with_no) + 1))
+                excel_columns = ['No'] + ordered_columns
+
                 ws.delete_rows(1, ws.max_row)
-                ws.append(ordered_columns)
-                for idx, col_name in enumerate(ordered_columns, start=1):
+                ws.append(excel_columns)
+                for idx, col_name in enumerate(excel_columns, start=1):
                     if col_name in HIDDEN_META_COLUMNS:
                         col_letter = get_column_letter(idx)
                         ws.column_dimensions[col_letter].hidden = True
-                for row in df.itertuples(index=False, name=None):
+                for row_num, row in enumerate(df_with_no.itertuples(index=False, name=None), start=1):
                     values: List[Any] = []
-                    for col_name, value in zip(ordered_columns, row):
-                        values.append(self._to_excel_value(col_name, value))
+                    for col_name, value in zip(excel_columns, row):
+                        if col_name == 'No':
+                            # 連番を採番（常に1から開始）
+                            values.append(row_num)
+                        else:
+                            values.append(self._to_excel_value(col_name, value))
                     ws.append(values)
 
                 try:
-                    due_col_idx = TASK_COLUMNS.index("期限") + 1
+                    # No列が先頭にあるため、インデックスを+1してから+1（つまり+2）
+                    due_col_idx = TASK_COLUMNS.index("期限") + 2
                 except ValueError:
                     due_col_idx = None
 
@@ -919,7 +929,8 @@ class TaskStore:
                     if col_name not in TASK_COLUMNS or not values:
                         continue
                     try:
-                        idx = TASK_COLUMNS.index(col_name) + 1
+                        # No列が先頭にあるため、インデックスを+1してから+1（つまり+2）
+                        idx = TASK_COLUMNS.index(col_name) + 2
                     except ValueError:
                         continue
                     col_letter = get_column_letter(idx)
