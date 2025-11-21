@@ -339,6 +339,7 @@ class TaskStore:
                 self.excel_path,
                 sheet_name=sheet_name,
                 engine="openpyxl",
+                index_col=None,
             )
 
             if "No" in df.columns:
