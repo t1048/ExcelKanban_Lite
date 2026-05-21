@@ -84,7 +84,7 @@
         item.className = 'validation-item';
 
         const label = document.createElement('label');
-        const id = 'val-' + btoa(unescape(encodeURIComponent(String(column)))).replace(/=/g, '');
+        const id = 'val-' + (window.TaskAppCommon?.sanitizeDOMId?.(String(column)) || String(column).replace(/[^a-zA-Z0-9_-]/g, '_'));
         label.setAttribute('for', id);
         label.textContent = column;
 
