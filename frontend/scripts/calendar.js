@@ -6,6 +6,10 @@ const {
   normalizeStatePayload,
   setupDragViewportAutoScroll,
   parseISO: parseISODate,
+  statusColor,
+  toLocaleDate,
+  collectCategoryOptions,
+  uniqAssignees,
 } = window.TaskAppCommon;
 
 const {
@@ -26,7 +30,7 @@ const {
   UNSET_STATUS_LABEL,
 } = window.TaskValidation || {};
 const { createExcelSyncHandlers } = window.TaskExcelSync || {};
-
+const { createTaskModal } = window.TaskModalHelper || {};
 const { createFilterPresetManager } = window.TaskFilterPresets || {};
 
 let api;
@@ -36,7 +40,6 @@ let STATUSES = [];
 let VALIDATIONS = {};
 let excelSyncHandlers = null;
 const VALIDATION_COLUMNS = ["ステータス", "大分類", "中分類", "タスク", "担当者", "優先度", "期限", "備考"];
-let CURRENT_EDIT = null;
 let CURRENT_DRAG = null;
 let cleanupAutoScroll = null;
 
@@ -426,7 +429,7 @@ function renderLegend() {
   const appendLegendItem = (labelText, colorKey = labelText) => {
     const dot = document.createElement('span');
     dot.className = 'legend-dot';
-    dot.style.background = statusColor(colorKey);
+    dot.style.background = statusColorLocal(colorKey);
     const item = document.createElement('span');
     item.className = 'legend-item';
     item.appendChild(dot);
@@ -738,12 +741,11 @@ function parseISO(value) {
 }
 
 function toISODate(date) {
-  const tzOffset = date.getTimezoneOffset() * 60000;
-  return new Date(date.getTime() - tzOffset).toISOString().slice(0, 10);
+  return window.TaskAppCommon.toISODate(date);
 }
 
 function toLocale(date) {
-  return `${date.getFullYear()}年${date.getMonth() + 1}月${date.getDate()}日`;
+  return window.TaskAppCommon.toLocaleDate(date);
 }
 
 function startOfWeek(date) {
@@ -830,247 +832,34 @@ function openValidationModal(options = {}) {
   });
 }
 
-function openCreate() {
-  CURRENT_EDIT = null;
-  openModal({
-    No: '',
-    ステータス: STATUSES[0] || '未着手',
-    大分類: '',
-    中分類: '',
-    タスク: '',
-    担当者: '',
-    優先度: getDefaultPriorityValue(),
-    期限: '',
-    備考: ''
-  }, { mode: 'create' });
-}
-
-function openEdit(no) {
-  const task = TASKS.find(t => t.No === no);
-  if (!task) return;
-  CURRENT_EDIT = no;
-  openModal(task, { mode: 'edit' });
-}
-
-function openModal(task, { mode }) {
-  const modal = document.getElementById('modal');
-  if (!modal) return;
-  const title = document.getElementById('modal-title');
-  const fno = document.getElementById('f-no');
-  const fstat = document.getElementById('f-status');
-  const fmajor = document.getElementById('f-major');
-  const fminor = document.getElementById('f-minor');
-  const fttl = document.getElementById('f-title');
-  const fwho = document.getElementById('f-assignee');
-  const fprio = document.getElementById('f-priority');
-  const fdue = document.getElementById('f-due');
-  const fnote = document.getElementById('f-notes');
-  const btnDelete = document.getElementById('btn-delete');
-
-  title.textContent = mode === 'create' ? 'タスク追加' : 'タスク編集';
-
-  const statuses = Array.isArray(STATUSES) ? STATUSES : [];
-  const seen = new Set();
-  fstat.innerHTML = '';
-  statuses.forEach(status => {
-    const normalized = normalizeStatusLabel(status);
-    if (seen.has(normalized)) return;
-    seen.add(normalized);
-    const opt = document.createElement('option');
-    opt.value = normalized;
-    opt.textContent = normalized;
-    fstat.appendChild(opt);
-  });
-  if (!seen.has(UNSET_STATUS_LABEL)) {
-    const opt = document.createElement('option');
-    opt.value = UNSET_STATUS_LABEL;
-    opt.textContent = UNSET_STATUS_LABEL;
-    fstat.appendChild(opt);
-  }
-
-  fno.value = task.No ?? '';
-  fstat.value = normalizeStatusLabel(task.ステータス);
-  if (!Array.from(fstat.options).some(opt => opt.value === fstat.value)) {
-    const opt = document.createElement('option');
-    opt.value = fstat.value;
-    opt.textContent = fstat.value;
-    fstat.appendChild(opt);
-  }
-  fstat.value = normalizeStatusLabel(task.ステータス);
-
-  if (fmajor) fmajor.value = task.大分類 || '';
-  if (fminor) fminor.value = task.中分類 || '';
-  fttl.value = task.タスク || '';
-  fwho.value = task.担当者 || '';
-  setupAssigneeInputSuggestions(fwho);
-  applyPriorityOptions(fprio, task.優先度, mode === 'create');
-  fdue.value = (task.期限 || '').slice(0, 10);
-  fnote.value = task.備考 || '';
-
-  btnDelete.style.display = mode === 'edit' ? 'inline-flex' : 'none';
-
-  document.getElementById('btn-close').onclick = closeModal;
-  document.getElementById('btn-cancel').onclick = closeModal;
-
-  btnDelete.onclick = async () => {
-    if (!CURRENT_EDIT) return;
-    if (!confirm('削除しますか？')) return;
-    try {
-      const ok = await api.delete_task(CURRENT_EDIT);
-      if (ok) {
-        if (typeof api.get_tasks === 'function') {
-          TASKS = sanitizeTaskList(await api.get_tasks());
-        } else {
-          const remaining = TASKS
-            .filter(x => x.No !== CURRENT_EDIT)
-            .map((record, idx) => ({ ...record, No: idx + 1 }));
-          TASKS = sanitizeTaskList(remaining);
-        }
-        CURRENT_EDIT = null;
-        closeModal();
+const taskModal = typeof createTaskModal === 'function'
+  ? createTaskModal({
+      apiAccessor: () => api,
+      getDataRefs: () => ({ tasks: TASKS, statuses: STATUSES, validations: VALIDATIONS, priorityHelper, get tasks() { return TASKS; }, set tasks(v) { TASKS = v; } }),
+      onAfterSave: () => {
         ensureMonthDefault();
         renderLegend();
         renderCalendar();
         renderBacklog();
         updateHeaderDueSummary(TASKS);
-      } else {
-        alert('削除できませんでした');
-      }
-    } catch (err) {
-      alert('削除に失敗: ' + (err?.message || err));
-    }
-  };
+      },
+    })
+  : { openCreate: () => {}, openEdit: () => {}, closeModal: () => {} };
 
-  const form = document.getElementById('task-form');
-  form.onsubmit = async (e) => {
-    e.preventDefault();
-    const payload = {
-      ステータス: denormalizeStatusLabel(fstat.value),
-      大分類: fmajor ? fmajor.value.trim() : '',
-      中分類: fminor ? fminor.value.trim() : '',
-      タスク: fttl.value.trim(),
-      担当者: fwho.value.trim(),
-      優先度: (fprio.value ?? '').trim(),
-      期限: fdue.value ? fdue.value : '',
-      備考: fnote.value,
-    };
+function openCreate(defaults) {
+  taskModal.openCreate(defaults);
+}
 
-    if (!payload.タスク) {
-      alert('タスクを入力してください。');
-      fttl.focus();
-      return;
-    }
-
-    try {
-      if (mode === 'create') {
-        const created = await api.add_task(payload);
-        const sanitized = sanitizeTaskRecord(created, TASKS.length);
-        if (sanitized) {
-          TASKS.push(sanitized);
-        }
-      } else {
-        const no = CURRENT_EDIT;
-        const updated = await api.update_task(no, payload);
-        const idx = TASKS.findIndex(x => x.No === no);
-        if (idx >= 0) {
-          const sanitized = sanitizeTaskRecord(updated, idx);
-          if (sanitized) {
-            TASKS[idx] = sanitized;
-          } else {
-            TASKS.splice(idx, 1);
-          }
-        }
-      }
-      CURRENT_EDIT = null;
-      closeModal();
-      ensureMonthDefault();
-      renderLegend();
-      renderCalendar();
-      renderBacklog();
-      updateHeaderDueSummary(TASKS);
-    } catch (err) {
-      alert('保存に失敗: ' + (err?.message || err));
-    }
-  };
-
-  modal.classList.add('open');
-  modal.setAttribute('aria-hidden', 'false');
+function openEdit(no) {
+  taskModal.openEdit(no);
 }
 
 function closeModal() {
-  const modal = document.getElementById('modal');
-  if (!modal) return;
-  modal.classList.remove('open');
-  modal.setAttribute('aria-hidden', 'true');
+  taskModal.closeModal();
 }
 
-function setupAssigneeInputSuggestions(fassignee) {
-  const datalist = document.getElementById('modal-assignee-list');
-  if (!fassignee || !datalist) return;
-
-  const candidates = collectAllAssignees()
-    .map(name => (name === '' ? '' : String(name ?? '').trim()))
-    .filter(Boolean);
-
-  const seen = new Set();
-  datalist.innerHTML = '';
-
-  candidates.forEach(name => {
-    if (seen.has(name)) return;
-    seen.add(name);
-    const opt = document.createElement('option');
-    opt.value = name;
-    datalist.appendChild(opt);
-  });
-
-  const current = String(fassignee.value ?? '').trim();
-  if (current && !seen.has(current)) {
-    const opt = document.createElement('option');
-    opt.value = current;
-    datalist.appendChild(opt);
-    seen.add(current);
-  }
-
-  fassignee.setAttribute('list', datalist.id);
-}
-
-function collectAllAssignees() {
-  const assignees = new Set();
-  TASKS.forEach(task => {
-    const name = String(task.担当者 ?? '').trim();
-    if (!name) return;
-    assignees.add(name);
-  });
-  return Array.from(assignees).sort((a, b) => a.localeCompare(b, 'ja'));
-}
-
-function statusColor(name) {
-  const normalized = normalizeStatusLabel(name);
-  if (normalized === UNSET_STATUS_LABEL) {
-    return 'rgba(148, 163, 184, 0.8)';
-  }
-
-  const key = normalized.replace(/\s+/g, '').toLowerCase();
-  switch (key) {
-    case '未着手':
-    case 'notstarted':
-      return 'rgba(248, 113, 113, 0.8)';
-    case '進行中':
-    case '対応中':
-    case 'inprogress':
-      return 'rgba(56, 189, 248, 0.8)';
-    case '保留':
-    case 'pending':
-      return 'rgba(250, 204, 21, 0.8)';
-    case '完了':
-    case '完了済み':
-    case '完了済':
-    case 'done':
-    case 'completed':
-      return 'rgba(34, 197, 94, 0.8)';
-    default:
-      return 'rgba(129, 140, 248, 0.8)';
-  }
+function statusColorLocal(name) {
+  return statusColor(name);
 }
 
 async function updateTaskDue(no, dueIso) {

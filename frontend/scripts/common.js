@@ -783,6 +783,160 @@
     return { update };
   }
 
+  const PRIORITY_LABEL_ORDER = new Map([
+    ['最優先', 0],
+    ['緊急', 0],
+    ['高', 1],
+    ['High', 1],
+    ['中', 2],
+    ['Medium', 2],
+    ['低', 3],
+    ['Low', 3],
+    ['通常', 4],
+    ['Normal', 4],
+    ['後回し', 5],
+    ['Low Priority', 5],
+  ]);
+
+  function prioritySortKey(value) {
+    if (value === null || value === undefined) return { weight: 1001, label: '' };
+    if (typeof value === 'number' && !Number.isNaN(value)) return { weight: value, label: '' };
+    const str = String(value).trim();
+    if (!str) return { weight: 1001, label: '' };
+    const num = Number(str);
+    if (!Number.isNaN(num)) return { weight: num, label: '' };
+    if (PRIORITY_LABEL_ORDER.has(str)) return { weight: PRIORITY_LABEL_ORDER.get(str), label: '' };
+    return { weight: 1000, label: str };
+  }
+
+  function comparePriorityValues(a, b) {
+    const ka = prioritySortKey(a);
+    const kb = prioritySortKey(b);
+    if (ka.weight !== kb.weight) return ka.weight - kb.weight;
+    return ka.label.localeCompare(kb.label, 'ja');
+  }
+
+  function statusColor(name) {
+    const normalized = normalizeStatusLabel(name);
+    if (normalized === UNSET_STATUS_LABEL) {
+      return 'rgba(148, 163, 184, 0.8)';
+    }
+    const key = normalized.replace(/\s+/g, '').toLowerCase();
+    switch (key) {
+      case '未着手':
+      case 'notstarted':
+        return 'rgba(248, 113, 113, 0.8)';
+      case '進行中':
+      case '対応中':
+      case 'inprogress':
+        return 'rgba(56, 189, 248, 0.8)';
+      case '保留':
+      case 'pending':
+        return 'rgba(250, 204, 21, 0.8)';
+      case '完了':
+      case '完了済み':
+      case '完了済':
+      case 'done':
+      case 'completed':
+        return 'rgba(34, 197, 94, 0.8)';
+      default:
+        return 'rgba(129, 140, 248, 0.8)';
+    }
+  }
+
+  function toISODate(date) {
+    const tzOffset = date.getTimezoneOffset() * 60000;
+    return new Date(date.getTime() - tzOffset).toISOString().slice(0, 10);
+  }
+
+  function toLocaleDate(date) {
+    return `${date.getFullYear()}年${date.getMonth() + 1}月${date.getDate()}日`;
+  }
+
+  function collectCategoryOptions(tasks, validations) {
+    const majorMap = new Map();
+    const looseMinors = new Set();
+
+    const ensureMajor = (name) => {
+      const text = String(name ?? '').trim();
+      if (!text) return null;
+      if (!majorMap.has(text)) {
+        majorMap.set(text, new Set());
+      }
+      return majorMap.get(text);
+    };
+
+    if (Array.isArray(tasks)) {
+      tasks.forEach(task => {
+        const major = String(task?.大分類 ?? '').trim();
+        const minor = String(task?.中分類 ?? '').trim();
+        if (major) {
+          const set = ensureMajor(major);
+          if (minor && set) {
+            set.add(minor);
+          }
+        } else if (minor) {
+          looseMinors.add(minor);
+        }
+      });
+    }
+
+    const validatedMajors = Array.isArray(validations && validations['大分類']) ? validations['大分類'] : [];
+    validatedMajors.forEach(name => {
+      ensureMajor(name);
+    });
+
+    const validatedMinors = Array.isArray(validations && validations['中分類']) ? validations['中分類'] : [];
+    validatedMinors.forEach(name => {
+      const text = String(name ?? '').trim();
+      if (!text) return;
+      let assigned = false;
+      majorMap.forEach(set => {
+        if (set.has(text)) assigned = true;
+      });
+      if (!assigned) {
+        looseMinors.add(text);
+      }
+    });
+
+    const majorList = Array.from(majorMap.keys()).sort((a, b) => a.localeCompare(b, 'ja'));
+    const minorMap = new Map();
+    majorList.forEach(major => {
+      const minors = Array.from(majorMap.get(major) ?? new Set())
+        .sort((a, b) => a.localeCompare(b, 'ja'));
+      minorMap.set(major, minors);
+    });
+
+    const allMinorsSet = new Set();
+    minorMap.forEach(list => {
+      list.forEach(value => allMinorsSet.add(value));
+    });
+    looseMinors.forEach(value => allMinorsSet.add(value));
+
+    const allMinors = Array.from(allMinorsSet).sort((a, b) => a.localeCompare(b, 'ja'));
+
+    return { majorList, minorMap, allMinors };
+  }
+
+  function uniqAssignees(tasks) {
+    const set = new Set();
+    (Array.isArray(tasks) ? tasks : []).forEach(t => { if ((t.担当者 || '').trim()) set.add(t.担当者.trim()); });
+    return Array.from(set).sort((a, b) => a.localeCompare(b, 'ja'));
+  }
+
+  function sanitizeDOMId(text) {
+    let id = '';
+    for (let i = 0; i < text.length; i++) {
+      const c = text.charCodeAt(i);
+      if ((c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c === 45 || c === 95) {
+        id += text[i];
+      } else {
+        id += '_' + c.toString(16);
+      }
+    }
+    return id || '_';
+  }
+
   global.TaskAppCommon = {
     createMockApi,
     ready,
@@ -804,5 +958,71 @@
     UNSET_STATUS_LABEL,
     getPriorityLevel,
     getDueFilterPreset,
+    statusColor,
+    toISODate,
+    toLocaleDate,
+    collectCategoryOptions,
+    uniqAssignees,
+    comparePriorityValues,
+    sanitizeDOMId,
+  };
+
+  var _toastTimer = null;
+  var _toastEl = null;
+
+  function ensureToast() {
+    if (_toastEl && _toastEl.isConnected) return _toastEl;
+    _toastEl = document.getElementById('app-toast');
+    if (!_toastEl) {
+      _toastEl = document.createElement('div');
+      _toastEl.id = 'app-toast';
+      _toastEl.className = 'app-toast';
+      _toastEl.setAttribute('aria-live', 'polite');
+      _toastEl.setAttribute('aria-atomic', 'true');
+      document.body.appendChild(_toastEl);
+    }
+    return _toastEl;
+  }
+
+  global.showToast = function (message, type) {
+    var el = ensureToast();
+    if (_toastTimer) { clearTimeout(_toastTimer); _toastTimer = null; }
+    el.textContent = message || '';
+    el.className = 'app-toast app-toast--' + (type || 'info');
+    el.hidden = false;
+    _toastTimer = setTimeout(function () {
+      el.hidden = true;
+      _toastTimer = null;
+    }, 3000);
+  };
+
+  var _loadingEl = null;
+
+  function ensureLoading() {
+    if (_loadingEl && _loadingEl.isConnected) return _loadingEl;
+    _loadingEl = document.getElementById('app-loading');
+    if (!_loadingEl) {
+      _loadingEl = document.createElement('div');
+      _loadingEl.id = 'app-loading';
+      _loadingEl.className = 'app-loading';
+      _loadingEl.setAttribute('aria-label', '処理中');
+      _loadingEl.hidden = true;
+      var spinner = document.createElement('div');
+      spinner.className = 'app-loading-spinner';
+      _loadingEl.appendChild(spinner);
+      document.body.appendChild(_loadingEl);
+    }
+    return _loadingEl;
+  }
+
+  global.showLoading = function (label) {
+    var el = ensureLoading();
+    el.setAttribute('aria-label', label || '処理中');
+    el.hidden = false;
+  };
+
+  global.hideLoading = function () {
+    var el = ensureLoading();
+    el.hidden = true;
   };
 }(window));

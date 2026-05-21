@@ -535,7 +535,7 @@
           state.statuses.forEach(s => filters.statuses.add(s));
         }
         state.statuses.forEach(s => {
-          const id = 'st-' + btoa(unescape(encodeURIComponent(s))).replace(/=/g, '');
+          const id = 'st-' + (typeof window.TaskAppCommon?.sanitizeDOMId === 'function' ? window.TaskAppCommon.sanitizeDOMId(s) : s.replace(/[^a-zA-Z0-9_-]/g, '_'));
           const lbl = document.createElement('label');
           const cb = document.createElement('input');
           cb.type = 'checkbox';
