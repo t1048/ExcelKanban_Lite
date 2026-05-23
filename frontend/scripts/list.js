@@ -6,6 +6,7 @@ const {
   parseISO,
   getDueState,
   getPriorityLevel,
+  getAncestorIds,
 } = window.TaskAppCommon;
 
 const {
@@ -28,8 +29,6 @@ const {
     ASSIGNEE_FILTER_ALL,
     ASSIGNEE_FILTER_UNASSIGNED,
     ASSIGNEE_UNASSIGNED_LABEL,
-    CATEGORY_FILTER_ALL,
-    CATEGORY_FILTER_MINOR_ALL,
   },
 } = window.TaskFilterUI;
 
@@ -41,11 +40,8 @@ let RUN_MODE = 'mock';    // 'mock' | 'pywebview'
 let excelSyncHandlers = null;
 
 /* ===================== 状態 ===================== */
-const VALIDATION_COLUMNS = ["ステータス", "大分類", "中分類", "タスク", "担当者", "優先度", "期限", "備考"];
-const MAJOR_EMPTY_LABEL = '（大分類なし）';
-const MINOR_EMPTY_LABEL = '（中分類なし）';
-const MAJOR_EMPTY_KEY = '__EMPTY_MAJOR__';
-const MINOR_EMPTY_KEY = '__EMPTY_MINOR__';
+const VALIDATION_COLUMNS = ["ステータス", "タスク", "担当者", "優先度", "期限", "備考"];
+const TREE_EXPAND_STATE = new Map();
 let STATUSES = [];
 let TASKS = [];
 let CURRENT_EDIT = null;
@@ -62,8 +58,6 @@ const applyPriorityOptions = (selectEl, currentValue, preferDefault = false) => 
 
 const WORKLOAD_IN_PROGRESS_KEYWORDS = ['進行', '作業中', 'inprogress', 'wip'];
 const WORKLOAD_HEAVY_THRESHOLD = 5;
-const GROUP_CONTEXT_MENU_ID = 'group-context-menu';
-let GROUP_CONTEXT_STATE = null;
 
 const STATUS_CLASS_MAP = new Map([
   ['進行中', 'status-pill--in-progress'],
@@ -186,9 +180,8 @@ const STATUS_SORT_SEQUENCE = ['', UNSET_STATUS_LABEL, '未着手', '進行中', 
 
 const TABLE_COLUMN_CONFIG = [
   { key: 'no', label: 'No', width: 70, minWidth: 60, sortable: true },
-  { key: 'major', label: '大分類', width: 160, minWidth: 120, sortable: true },
-  { key: 'minor', label: '中分類', width: 160, minWidth: 120, sortable: true },
   { key: 'task', label: 'タスク', sortable: true, className: 'col-task', minWidth: 260 },
+  { key: 'parent', label: '親タスク', width: 160, minWidth: 120, sortable: false },
   { key: 'status', label: 'ステータス', width: 160, minWidth: 140, sortable: true },
   { key: 'assignee', label: '担当者', width: 160, minWidth: 140, sortable: true },
   { key: 'priority', label: '優先度', width: 140, minWidth: 120, sortable: true },
@@ -371,212 +364,6 @@ function normalizeCategoryValue(value) {
   return String(value ?? '').trim();
 }
 
-function buildGroupedTaskList(tasks) {
-  const majorGroups = [];
-  const majorMap = new Map();
-
-  tasks.forEach(task => {
-    const majorRaw = normalizeCategoryValue(task?.大分類);
-    const minorRaw = normalizeCategoryValue(task?.中分類);
-    const majorKey = majorRaw || MAJOR_EMPTY_KEY;
-    const minorKey = minorRaw || MINOR_EMPTY_KEY;
-    const majorLabel = majorRaw || MAJOR_EMPTY_LABEL;
-    const minorLabel = minorRaw || MINOR_EMPTY_LABEL;
-
-    let majorGroup = majorMap.get(majorKey);
-    if (!majorGroup) {
-      majorGroup = {
-        key: majorKey,
-        label: majorLabel,
-        value: majorRaw,
-        minors: [],
-        minorMap: new Map(),
-      };
-      majorMap.set(majorKey, majorGroup);
-      majorGroups.push(majorGroup);
-    }
-
-    let minorGroup = majorGroup.minorMap.get(minorKey);
-    if (!minorGroup) {
-      minorGroup = {
-        key: minorKey,
-        label: minorLabel,
-        value: minorRaw,
-        tasks: [],
-      };
-      majorGroup.minorMap.set(minorKey, minorGroup);
-      majorGroup.minors.push(minorGroup);
-    }
-
-    minorGroup.tasks.push(task);
-  });
-
-  majorGroups.forEach(group => {
-    group.count = group.minors.reduce((sum, minor) => sum + minor.tasks.length, 0);
-    delete group.minorMap;
-  });
-
-  return majorGroups;
-}
-
-function createGroupRow(type, label, count, meta = {}) {
-  const row = document.createElement('tr');
-  row.classList.add('group-row');
-  row.classList.add(type === 'major' ? 'group-major' : 'group-minor');
-
-  const cell = document.createElement('td');
-  cell.colSpan = TABLE_COLUMN_CONFIG.length;
-  cell.classList.add('group-cell');
-
-  const title = document.createElement('span');
-  title.className = 'group-label';
-  title.textContent = label;
-  cell.appendChild(title);
-
-  if (typeof count === 'number' && Number.isFinite(count)) {
-    const countSpan = document.createElement('span');
-    countSpan.className = 'group-count';
-    countSpan.textContent = `（${count}件）`;
-    cell.appendChild(countSpan);
-  }
-
-  row.appendChild(cell);
-
-  if (meta.majorValue !== undefined) {
-    row.dataset.majorValue = meta.majorValue ?? '';
-  }
-  if (meta.minorValue !== undefined) {
-    row.dataset.minorValue = meta.minorValue ?? '';
-  }
-  row.dataset.groupType = type;
-  let suppressNextContextMenu = false;
-  const triggerContextMenu = (event) => {
-    showGroupContextMenu(event, {
-      type,
-      label,
-      majorValue: meta.majorValue ?? '',
-      minorValue: meta.minorValue,
-    });
-  };
-
-  row.addEventListener('contextmenu', (event) => {
-    if (suppressNextContextMenu) {
-      suppressNextContextMenu = false;
-      return;
-    }
-    triggerContextMenu(event);
-  });
-
-  const handleSecondaryPress = (event) => {
-    if (event.button !== 2) return;
-    suppressNextContextMenu = true;
-    triggerContextMenu(event);
-    window.setTimeout(() => {
-      suppressNextContextMenu = false;
-    }, 0);
-  };
-
-  if (window.PointerEvent) {
-    row.addEventListener('pointerdown', handleSecondaryPress);
-  } else {
-    row.addEventListener('mousedown', handleSecondaryPress);
-  }
-
-  return row;
-}
-
-function ensureGroupContextMenu() {
-  let menu = document.getElementById(GROUP_CONTEXT_MENU_ID);
-  if (menu) return menu;
-
-  menu = document.createElement('div');
-  menu.id = GROUP_CONTEXT_MENU_ID;
-  menu.className = 'group-context-menu';
-  menu.setAttribute('role', 'menu');
-  menu.setAttribute('aria-hidden', 'true');
-  menu.style.display = 'none';
-
-  const item = document.createElement('button');
-  item.type = 'button';
-  item.className = 'group-context-menu-item';
-  item.textContent = 'ここの分類へタスク追加';
-  item.addEventListener('click', () => {
-    if (!GROUP_CONTEXT_STATE) return;
-    const { majorValue, minorValue } = GROUP_CONTEXT_STATE;
-    hideGroupContextMenu();
-    openCreate({
-      major: majorValue,
-      minor: minorValue,
-    });
-  });
-
-  menu.appendChild(item);
-  document.body.appendChild(menu);
-
-  return menu;
-}
-
-function hideGroupContextMenu() {
-  const menu = document.getElementById(GROUP_CONTEXT_MENU_ID);
-  if (menu) {
-    menu.classList.remove('is-visible');
-    menu.setAttribute('aria-hidden', 'true');
-    menu.style.left = '';
-    menu.style.top = '';
-    menu.style.display = 'none';
-  }
-  GROUP_CONTEXT_STATE = null;
-}
-
-function positionContextMenu(menu, x, y) {
-  const width = menu.offsetWidth || 0;
-  const height = menu.offsetHeight || 0;
-  let left = x;
-  let top = y;
-
-  const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 0;
-  const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 0;
-
-  if (left + width > viewportWidth) {
-    left = Math.max(0, viewportWidth - width - 8);
-  }
-  if (top + height > viewportHeight) {
-    top = Math.max(0, viewportHeight - height - 8);
-  }
-
-  menu.style.left = `${left}px`;
-  menu.style.top = `${top}px`;
-}
-
-function showGroupContextMenu(event, context) {
-  event.preventDefault();
-  event.stopPropagation();
-  hideGroupContextMenu();
-  const menu = ensureGroupContextMenu();
-  GROUP_CONTEXT_STATE = context;
-  menu.classList.add('is-visible');
-  menu.setAttribute('aria-hidden', 'false');
-
-  // ensure menu has dimensions before positioning
-  menu.style.left = '-9999px';
-  menu.style.top = '-9999px';
-  menu.style.display = 'block';
-  const clientX = event.clientX ?? (event.pageX - (window.scrollX || window.pageXOffset || 0));
-  const clientY = event.clientY ?? (event.pageY - (window.scrollY || window.pageYOffset || 0));
-  positionContextMenu(menu, clientX, clientY);
-}
-
-document.addEventListener('click', (event) => {
-  const menu = document.getElementById(GROUP_CONTEXT_MENU_ID);
-  if (!menu) return;
-  if (menu.contains(event.target)) return;
-  hideGroupContextMenu();
-});
-
-document.addEventListener('scroll', hideGroupContextMenu, true);
-window.addEventListener('blur', hideGroupContextMenu);
-window.addEventListener('resize', hideGroupContextMenu);
-
 function statusSortWeight(name) {
   const normalized = normalizeStatusLabel(name);
   const idx = STATUS_SORT_SEQUENCE.indexOf(normalized);
@@ -593,20 +380,6 @@ function compareStatusValues(a, b) {
   const wb = statusSortWeight(sb);
   if (wa !== wb) return wa - wb;
   return sa.localeCompare(sb, 'ja');
-}
-
-function compareMajorValues(a, b) {
-  const ma = normalizedText(a?.大分類);
-  const mb = normalizedText(b?.大分類);
-  return compareLocaleStrings(ma, mb);
-}
-
-function compareMinorValues(a, b) {
-  const majorCmp = compareMajorValues(a, b);
-  if (majorCmp !== 0) return majorCmp;
-  const mina = normalizedText(a?.中分類);
-  const minb = normalizedText(b?.中分類);
-  return compareLocaleStrings(mina, minb);
 }
 
 function compareTaskValues(a, b) {
@@ -653,8 +426,6 @@ function compareNoValues(a, b) {
 const SORT_COMPARATORS = {
   no: compareNoValues,
   status: compareStatusValues,
-  major: compareMajorValues,
-  minor: compareMinorValues,
   task: compareTaskValues,
   assignee: compareAssigneeValues,
   priority: (a, b) => comparePriorityValues(a?.優先度, b?.優先度),
@@ -981,41 +752,76 @@ function renderList() {
       return defaultListComparator(a, b, statusOrder);
     });
 
-  const createTaskRow = (task) => {
+  const createTaskRow = (task, depth) => {
     const tr = document.createElement('tr');
     tr.dataset.no = String(task.No || '');
+    tr.dataset.kanbanId = String(task.__kanban_id || '');
     tr.addEventListener('dblclick', () => openEdit(task.No));
+
+    const d = typeof depth === 'number' ? depth : 0;
+    const hasChildren = TASKS.some(t => String(t.__parent_id ?? '').trim() === String(task.__kanban_id ?? '').trim());
+    const isExpanded = TREE_EXPAND_STATE.get(String(task.__kanban_id ?? '').trim()) !== false;
 
     const noTd = document.createElement('td');
     applyColumnBaseStyles(noTd, 'no');
     noTd.textContent = task.No ? `#${task.No}` : '';
     tr.appendChild(noTd);
 
-    const majorTd = document.createElement('td');
-    applyColumnBaseStyles(majorTd, 'major');
-    if ((task.大分類 || '').trim()) {
-      const badge = document.createElement('span');
-      badge.className = 'category-pill category-major';
-      badge.textContent = task.大分類.trim();
-      majorTd.appendChild(badge);
-    }
-    tr.appendChild(majorTd);
-
-    const minorTd = document.createElement('td');
-    applyColumnBaseStyles(minorTd, 'minor');
-    if ((task.中分類 || '').trim()) {
-      const badge = document.createElement('span');
-      badge.className = 'category-pill category-minor';
-      badge.textContent = task.中分類.trim();
-      minorTd.appendChild(badge);
-    }
-    tr.appendChild(minorTd);
-
+    // タスク名列（ツリーインデント付き）
     const titleTd = document.createElement('td');
     applyColumnBaseStyles(titleTd, 'task');
     titleTd.classList.add('task-cell', 'col-task');
-    titleTd.textContent = task.タスク || '(無題)';
+    const titleWrap = document.createElement('div');
+    titleWrap.style.display = 'flex';
+    titleWrap.style.alignItems = 'center';
+    titleWrap.style.paddingLeft = `${d * 24}px`;
+    titleWrap.style.gap = '4px';
+
+    if (hasChildren) {
+      const toggle = document.createElement('span');
+      toggle.className = 'tree-toggle' + (isExpanded ? ' expanded' : '');
+      toggle.textContent = '\u25B6';
+      toggle.style.cursor = 'pointer';
+      toggle.style.userSelect = 'none';
+      toggle.style.width = '18px';
+      toggle.style.display = 'inline-block';
+      toggle.style.textAlign = 'center';
+      toggle.style.color = 'var(--muted, #9ca3af)';
+      toggle.style.transition = 'transform 0.15s';
+      toggle.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const id = String(task.__kanban_id ?? '').trim();
+        const currentlyExpanded = TREE_EXPAND_STATE.get(id) !== false;
+        TREE_EXPAND_STATE.set(id, !currentlyExpanded);
+        renderList();
+      });
+      titleWrap.appendChild(toggle);
+    } else if (d > 0) {
+      const spacer = document.createElement('span');
+      spacer.style.width = '18px';
+      spacer.style.display = 'inline-block';
+      titleWrap.appendChild(spacer);
+    }
+
+    const titleText = document.createElement('span');
+    titleText.textContent = task.タスク || '(無題)';
+    titleWrap.appendChild(titleText);
+    titleTd.appendChild(titleWrap);
     tr.appendChild(titleTd);
+
+    // 親タスク名列
+    const parentTd = document.createElement('td');
+    applyColumnBaseStyles(parentTd, 'parent');
+    if (task.__parent_id) {
+      const parentTask = TASKS.find(t => String(t.__kanban_id ?? '').trim() === task.__parent_id);
+      if (parentTask) {
+        const pill = document.createElement('span');
+        pill.className = 'parent-pill';
+        pill.textContent = parentTask.タスク || '(無題)';
+        parentTd.appendChild(pill);
+      }
+    }
+    tr.appendChild(parentTd);
 
     const statusTd = document.createElement('td');
     applyColumnBaseStyles(statusTd, 'status');
@@ -1072,23 +878,42 @@ function renderList() {
     notesTd.textContent = task.備考 || '';
     tr.appendChild(notesTd);
 
-    return tr;
+    return { tr, hasChildren, isExpanded, kanbanId: String(task.__kanban_id ?? '').trim() };
   };
 
-  const groupedTasks = buildGroupedTaskList(sortedTasks);
-  groupedTasks.forEach(majorGroup => {
-    tbody.appendChild(createGroupRow('major', majorGroup.label, majorGroup.count, {
-      majorValue: majorGroup.value,
-    }));
-    majorGroup.minors.forEach(minorGroup => {
-      tbody.appendChild(createGroupRow('minor', minorGroup.label, minorGroup.tasks.length, {
-        majorValue: majorGroup.value,
-        minorValue: minorGroup.value,
-      }));
-      minorGroup.tasks.forEach(task => {
-        tbody.appendChild(createTaskRow(task));
-      });
+  // ツリー構造で再帰的に描画
+  const renderTreeNodes = (parentId, depth) => {
+    const children = sortedTasks.filter(t => {
+      const pid = String(t.__parent_id ?? '').trim();
+      return pid === parentId;
     });
+    children.forEach(task => {
+      const { tr, hasChildren, isExpanded, kanbanId } = createTaskRow(task, depth);
+      tbody.appendChild(tr);
+      if (hasChildren && isExpanded) {
+        renderTreeNodes(kanbanId, depth + 1);
+      }
+    });
+  };
+
+  // ルートタスク（__parent_idが空）を描画し、子を再帰的に描画
+  const rootTasks = sortedTasks.filter(t => !String(t.__parent_id ?? '').trim());
+  rootTasks.forEach(task => {
+    const { tr, hasChildren, isExpanded, kanbanId } = createTaskRow(task, 0);
+    tbody.appendChild(tr);
+    if (hasChildren && isExpanded) {
+      renderTreeNodes(kanbanId, 1);
+    }
+  });
+  // 親が存在しない孤立子タスクも表示
+  const orphanTasks = sortedTasks.filter(t => {
+    const pid = String(t.__parent_id ?? '').trim();
+    if (!pid) return false;
+    return !sortedTasks.some(p => String(p.__kanban_id ?? '').trim() === pid);
+  });
+  orphanTasks.forEach(task => {
+    const { tr } = createTaskRow(task, 0);
+    tbody.appendChild(tr);
   });
 
   table.appendChild(tbody);
@@ -1159,71 +984,6 @@ function uniqAssignees() {
   return Array.from(set).sort((a, b) => a.localeCompare(b, 'ja'));
 }
 
-function collectCategoryOptions() {
-  const majorMap = new Map();
-  const looseMinors = new Set();
-
-  const ensureMajor = (name) => {
-    const text = String(name ?? '').trim();
-    if (!text) return null;
-    if (!majorMap.has(text)) {
-      majorMap.set(text, new Set());
-    }
-    return majorMap.get(text);
-  };
-
-  if (Array.isArray(TASKS)) {
-    TASKS.forEach(task => {
-      const major = String(task?.大分類 ?? '').trim();
-      const minor = String(task?.中分類 ?? '').trim();
-      if (major) {
-        const set = ensureMajor(major);
-        if (minor && set) {
-          set.add(minor);
-        }
-      } else if (minor) {
-        looseMinors.add(minor);
-      }
-    });
-  }
-
-  const validatedMajors = Array.isArray(VALIDATIONS['大分類']) ? VALIDATIONS['大分類'] : [];
-  validatedMajors.forEach(name => {
-    ensureMajor(name);
-  });
-
-  const validatedMinors = Array.isArray(VALIDATIONS['中分類']) ? VALIDATIONS['中分類'] : [];
-  validatedMinors.forEach(name => {
-    const text = String(name ?? '').trim();
-    if (!text) return;
-    let assigned = false;
-    majorMap.forEach(set => {
-      if (set.has(text)) assigned = true;
-    });
-    if (!assigned) {
-      looseMinors.add(text);
-    }
-  });
-
-  const majorList = Array.from(majorMap.keys()).sort((a, b) => a.localeCompare(b, 'ja'));
-  const minorMap = new Map();
-  majorList.forEach(major => {
-    const minors = Array.from(majorMap.get(major) ?? new Set())
-      .sort((a, b) => a.localeCompare(b, 'ja'));
-    minorMap.set(major, minors);
-  });
-
-  const allMinorsSet = new Set();
-  minorMap.forEach(list => {
-    list.forEach(value => allMinorsSet.add(value));
-  });
-  looseMinors.forEach(value => allMinorsSet.add(value));
-
-  const allMinors = Array.from(allMinorsSet).sort((a, b) => a.localeCompare(b, 'ja'));
-
-  return { majorList, minorMap, allMinors };
-}
-
 const PRIORITY_LABEL_ORDER = new Map([
   ['最優先', 0],
   ['緊急', 0],
@@ -1287,19 +1047,33 @@ function openValidationModal(options = {}) {
 }
 
 function getFilteredTasks() {
-  return filterController?.applyFilters(TASKS) ?? TASKS;
+  const base = filterController?.applyFilters(TASKS) ?? TASKS;
+  const baseSet = new Set(base.map(t => String(t.__kanban_id ?? '').trim()));
+  const ancestorsToAdd = new Set();
+
+  for (const task of base) {
+    const pid = String(task.__parent_id ?? '').trim();
+    if (!pid) continue;
+    const ancestors = getAncestorIds(task.__kanban_id, TASKS) || [];
+    ancestors.forEach(id => {
+      if (!baseSet.has(id)) ancestorsToAdd.add(id);
+    });
+  }
+
+  if (ancestorsToAdd.size === 0) return base;
+
+  const parentTasks = TASKS.filter(t => ancestorsToAdd.has(String(t.__kanban_id ?? '').trim()));
+  return [...base, ...parentTasks];
 }
 
 
 /* ===================== モーダル: 追加/編集 ===================== */
 function openCreate(defaults = {}) {
-  hideGroupContextMenu();
   CURRENT_EDIT = null;
   openModal({
     No: '',
     ステータス: STATUSES[0] || '未着手',
-    大分類: defaults.major !== undefined ? (defaults.major || '') : '',
-    中分類: defaults.minor !== undefined ? (defaults.minor || '') : '',
+    __parent_id: defaults.parent_id || '',
     タスク: '',
     担当者: '',
     優先度: getDefaultPriorityValue(),
@@ -1312,67 +1086,6 @@ function openEdit(no) {
   if (!t) return;
   CURRENT_EDIT = no;
   openModal(t, { mode: 'edit' });
-}
-
-function setupCategoryInputSuggestions(fmajor, fminor) {
-  const majorListEl = document.getElementById('modal-major-list');
-  const minorListEl = document.getElementById('modal-minor-list');
-  if (!majorListEl && !minorListEl) return;
-
-  const { majorList, minorMap, allMinors } = collectCategoryOptions();
-
-  const fillOptions = (datalist, values) => {
-    if (!datalist) return;
-    datalist.innerHTML = '';
-    if (!Array.isArray(values)) return;
-    const seen = new Set();
-    values.forEach(value => {
-      const text = String(value ?? '').trim();
-      if (!text || seen.has(text)) return;
-      seen.add(text);
-      const opt = document.createElement('option');
-      opt.value = text;
-      datalist.appendChild(opt);
-    });
-  };
-
-  fillOptions(majorListEl, majorList);
-
-  const fallbackMinors = Array.isArray(allMinors) ? allMinors : [];
-  const updateMinorOptions = () => {
-    if (!minorListEl) return;
-    const majorValue = String(fmajor?.value ?? '').trim();
-    let candidates = fallbackMinors;
-    if (majorValue && minorMap.has(majorValue)) {
-      const list = minorMap.get(majorValue) || [];
-      if (Array.isArray(list) && list.length > 0) {
-        candidates = list;
-      }
-    }
-    fillOptions(minorListEl, candidates);
-  };
-
-  updateMinorOptions();
-
-  if (fmajor && minorListEl) {
-    if (typeof fmajor.__minorListHandler === 'function') {
-      fmajor.removeEventListener('input', fmajor.__minorListHandler);
-      fmajor.removeEventListener('change', fmajor.__minorListHandler);
-    }
-    const handler = () => updateMinorOptions();
-    fmajor.__minorListHandler = handler;
-    fmajor.addEventListener('input', handler);
-    fmajor.addEventListener('change', handler);
-  }
-
-  if (fminor && minorListEl) {
-    if (typeof fminor.__minorListRefresh === 'function') {
-      fminor.removeEventListener('focus', fminor.__minorListRefresh);
-    }
-    const refresh = () => updateMinorOptions();
-    fminor.__minorListRefresh = refresh;
-    fminor.addEventListener('focus', refresh);
-  }
 }
 
 function setupAssigneeInputSuggestions(fassignee) {
@@ -1408,14 +1121,15 @@ function openModal(task, { mode }) {
   const title = document.getElementById('modal-title');
   const fno = document.getElementById('f-no');
   const fstat = document.getElementById('f-status');
-  const fmajor = document.getElementById('f-major');
-  const fminor = document.getElementById('f-minor');
+  const fparent = document.getElementById('f-parent');
+  const fparentHidden = document.getElementById('f-parent-hidden');
   const fttl = document.getElementById('f-title');
   const fwho = document.getElementById('f-assignee');
   const fprio = document.getElementById('f-priority');
   const fdue = document.getElementById('f-due');
   const fnote = document.getElementById('f-notes');
   const btnDelete = document.getElementById('btn-delete');
+  const btnAddChildTask = document.getElementById('btn-add-child-task');
 
   title.textContent = mode === 'create' ? 'タスク追加' : 'タスク編集';
 
@@ -1429,9 +1143,22 @@ function openModal(task, { mode }) {
 
   fno.value = task.No ?? '';
   fstat.value = task.ステータス || STATUSES[0] || '未着手';
-  if (fmajor) fmajor.value = task.大分類 || '';
-  if (fminor) fminor.value = task.中分類 || '';
-  setupCategoryInputSuggestions(fmajor, fminor);
+
+  // 親タスク選択UI
+  if (fparent && fparentHidden) {
+    const currentParentId = task.__parent_id || '';
+    fparentHidden.value = currentParentId;
+    if (currentParentId) {
+      const parentTask = TASKS.find(t => String(t.__kanban_id ?? '').trim() === currentParentId);
+      fparent.value = parentTask ? parentTask.タスク : currentParentId;
+    } else {
+      fparent.value = '';
+    }
+    if (typeof window.TaskModalHelper?.setupParentTaskSelector === 'function') {
+      window.TaskModalHelper.setupParentTaskSelector(fparent, fparentHidden, TASKS, task.__kanban_id || '');
+    }
+  }
+
   fttl.value = task.タスク || '';
   fwho.value = task.担当者 || '';
   setupAssigneeInputSuggestions(fwho);
@@ -1446,9 +1173,15 @@ function openModal(task, { mode }) {
   document.getElementById('btn-cancel').onclick = closeModal;
   btnDelete.onclick = async () => {
     if (!CURRENT_EDIT) return;
-    if (!confirm('削除しますか？')) return;
+    const currentTask = TASKS.find(x => x.No === CURRENT_EDIT);
+    const childCount = currentTask ? TASKS.filter(t => String(t.__parent_id ?? '').trim() === String(currentTask.__kanban_id ?? '').trim()).length : 0;
+    let confirmMsg = '削除しますか？';
+    if (childCount > 0) {
+      confirmMsg = `このタスクには ${childCount} 件の子タスクがあります。子タスクもすべて削除しますか？\n\nOK = すべて削除 / キャンセル = 削除中止`;
+    }
+    if (!confirm(confirmMsg)) return;
     try {
-      const ok = await api.delete_task(CURRENT_EDIT);
+      const ok = await api.delete_task(CURRENT_EDIT, true);
       if (ok) {
         if (typeof api.get_tasks === 'function') {
           TASKS = sanitizeTaskList(await api.get_tasks());
@@ -1475,13 +1208,69 @@ function openModal(task, { mode }) {
     }
   };
 
+  btnAddChildTask.onclick = async () => {
+    const payload = {
+      ステータス: denormalizeStatusLabel(fstat.value),
+      __parent_id: fparentHidden ? fparentHidden.value.trim() : '',
+      タスク: fttl.value.trim(),
+      担当者: fwho.value.trim(),
+      優先度: (fprio.value ?? '').trim(),
+      期限: fdue.value ? fdue.value : '',
+      備考: fnote.value
+    };
+
+    if (!payload.タスク) {
+      alert('タスクを入力してください。');
+      fttl.focus();
+      return;
+    }
+
+    try {
+      let savedKanbanId = null;
+      if (mode === 'create') {
+        const created = await api.add_task(payload);
+        const sanitized = sanitizeTaskRecord(created, TASKS.length);
+        if (sanitized) {
+          TASKS.push(sanitized);
+          savedKanbanId = sanitized.__kanban_id || null;
+        }
+      } else {
+        const no = CURRENT_EDIT;
+        const updated = await api.update_task(no, payload);
+        const i = TASKS.findIndex(x => x.No === no);
+        if (i >= 0) {
+          const sanitized = sanitizeTaskRecord(updated, i);
+          if (sanitized) {
+            TASKS[i] = sanitized;
+            savedKanbanId = sanitized.__kanban_id || null;
+          } else {
+            TASKS.splice(i, 1);
+          }
+        }
+      }
+      CURRENT_EDIT = null;
+      closeModal();
+      filterController?.updateData({
+        tasks: TASKS,
+        statuses: STATUSES,
+        validations: VALIDATIONS,
+        preserveStatusSelection: true,
+      });
+      renderList();
+      if (savedKanbanId) {
+        openCreate({ parent_id: savedKanbanId });
+      }
+    } catch (err) {
+      alert('保存に失敗: ' + (err?.message || err));
+    }
+  };
+
   const form = document.getElementById('task-form');
   form.onsubmit = async (e) => {
     e.preventDefault();
     const payload = {
       ステータス: denormalizeStatusLabel(fstat.value),
-      大分類: fmajor ? fmajor.value.trim() : '',
-      中分類: fminor ? fminor.value.trim() : '',
+      __parent_id: fparentHidden ? fparentHidden.value.trim() : '',
       タスク: fttl.value.trim(),
       担当者: fwho.value.trim(),
       優先度: (fprio.value ?? '').trim(),

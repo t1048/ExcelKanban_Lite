@@ -35,14 +35,15 @@
 | File watcher | `backend/excel_watcher.py` | watchdog / polling observer for external Excel changes |
 | Startup dialog | `backend/gui_dialog.py` | Tkinter GUI to pick Excel file and options |
 | Shared frontend | `frontend/scripts/common.js` | Mock API, validation helpers, status colors, toast/loading UI |
-| Shared modal | `frontend/scripts/modalHelper.js` | Task create/edit modal (used by calendar/timeline; **index.js still has its own**) |
+| Shared modal | `frontend/scripts/modalHelper.js` | Task create/edit modal (used by calendar/timeline; **index.js still has its own**). Includes parent task selector with search+tree dropdown. |
 | Excel sync UI | `frontend/scripts/excelSync.js` | Validation rule editing modal |
 
 ## Repo-Specific Quirks
 
 - `backend/backend.py` must not import from `.main` at module level without `sys.path` manipulation — when run as `python backend/backend.py`, Python resolves `backend` to the file itself. The wrapper adds `repo_root` to `sys.path` before importing the package.
 - `ExecOption.json` (launch options cache) is stored next to `backend/main.py`, i.e. inside the `backend/` directory.
-- Excel **must** contain (or will auto-create) these columns: `ステータス`, `大分類`, `中分類`, `タスク`, `担当者`, `優先度`, `期限`, `備考`. A hidden meta column `__kanban_id` is used for stable row tracking across reloads.
+- Excel **must** contain (or will auto-create) these columns: `ステータス`, `タスク`, `担当者`, `優先度`, `期限`, `備考`. A hidden meta column `__kanban_id` is used for stable row tracking across reloads. A hidden `__parent_id` column stores the parent task's `__kanban_id` for recursive parent-child hierarchy.
+- Old Excel files with `大分類`/`中分類` columns are automatically migrated on first load: parent tasks are created from `大分類` values, child tasks get `__parent_id` set, and `中分類` is moved to `備考` as `[旧中分類: xxx]`. A backup is created before migration.
 - Backups are written next to the target Excel file: `{stem}.bak_YYYYMMDD_HHMMSS.xlsx`. Max 10 backups, rotated by mtime.
 - Python 3.10+ required (`str \| None` annotations).
 - `.kilo/package.json` is for the KiloCode editor plugin, not the app runtime.

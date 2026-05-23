@@ -19,6 +19,7 @@ from backend import (  # noqa: F401
     HIDDEN_META_COLUMNS,
     JsApi,
     META_ID_COLUMN,
+    PARENT_ID_COLUMN,
     TASK_COLUMNS,
     TaskStore,
     format_priority,

@@ -61,8 +61,17 @@ class JsApi:
     def move_task(self, no_value: Any, new_status: str) -> Dict[str, Any]:
         return self.store.move_task(int(no_value), new_status)
 
-    def delete_task(self, no_value: Any) -> bool:
-        return self.store.delete_task(int(no_value))
+    def move_task_parent(self, no_value: Any, new_parent_id: str) -> Dict[str, Any]:
+        return self.store.update_task(int(no_value), {"__parent_id": new_parent_id or ""})
+
+    def delete_task(self, no_value: Any, cascade: bool = True) -> bool:
+        return self.store.delete_task(int(no_value), cascade=cascade)
+
+    def get_task_tree(self) -> list:
+        return self.store.get_task_tree()
+
+    def get_task_children(self, task_id: str) -> list:
+        return self.store.get_children(task_id)
 
     def save_excel(self) -> str:
         return self.store.save_excel()

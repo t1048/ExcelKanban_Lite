@@ -5,8 +5,6 @@
     ASSIGNEE_FILTER_ALL: '__ALL__',
     ASSIGNEE_FILTER_UNASSIGNED: '__UNASSIGNED__',
     ASSIGNEE_UNASSIGNED_LABEL: '（未割り当て）',
-    CATEGORY_FILTER_ALL: '__CATEGORY_ALL__',
-    CATEGORY_FILTER_MINOR_ALL: '__CATEGORY_MINOR_ALL__',
   };
 
   function renderHeaderTemplate(container, options = {}) {
@@ -18,20 +16,6 @@
         <select id="flt-assignee">
           <option value="${constants.ASSIGNEE_FILTER_ALL}">（全員）</option>
           <option value="${constants.ASSIGNEE_FILTER_UNASSIGNED}">${constants.ASSIGNEE_UNASSIGNED_LABEL}</option>
-        </select>
-      </div>
-
-      <div class="filter">
-        <label for="flt-major">大分類</label>
-        <select id="flt-major">
-          <option value="${constants.CATEGORY_FILTER_ALL}">（すべて）</option>
-        </select>
-      </div>
-
-      <div class="filter">
-        <label for="flt-minor">中分類</label>
-        <select id="flt-minor" disabled>
-          <option value="${constants.CATEGORY_FILTER_MINOR_ALL}">（すべて）</option>
         </select>
       </div>
 
@@ -128,7 +112,6 @@
         statuses: set,
         keyword: '',
         date: { mode: 'none', from: '', to: '' },
-        category: { major: constants.CATEGORY_FILTER_ALL, minor: constants.CATEGORY_FILTER_MINOR_ALL },
       };
     };
 
@@ -147,10 +130,6 @@
           mode: filters.date?.mode || 'none',
           from: filters.date?.from || '',
           to: filters.date?.to || '',
-        },
-        category: {
-          major: filters.category?.major ?? constants.CATEGORY_FILTER_ALL,
-          minor: filters.category?.minor ?? constants.CATEGORY_FILTER_MINOR_ALL,
         },
       };
 
@@ -221,11 +200,6 @@
         to: String(dateRaw.to ?? ''),
       };
 
-      const categoryRaw = data.category && typeof data.category === 'object' ? data.category : {};
-      const major = String(categoryRaw.major ?? '').trim() || constants.CATEGORY_FILTER_ALL;
-      const minor = String(categoryRaw.minor ?? '').trim() || constants.CATEGORY_FILTER_MINOR_ALL;
-      next.category = { major, minor };
-
       return next;
     };
 
@@ -281,71 +255,6 @@
       }
       filters = applyPresetFilters(preset.filters);
       return true;
-    };
-
-    const collectCategoryOptions = () => {
-      const majorMap = new Map();
-      const looseMinors = new Set();
-
-      const ensureMajor = (name) => {
-        const text = String(name ?? '').trim();
-        if (!text) return null;
-        if (!majorMap.has(text)) {
-          majorMap.set(text, new Set());
-        }
-        return majorMap.get(text);
-      };
-
-      if (Array.isArray(state.tasks)) {
-        state.tasks.forEach(task => {
-          const major = String(task?.大分類 ?? '').trim();
-          const minor = String(task?.中分類 ?? '').trim();
-          if (major) {
-            const set = ensureMajor(major);
-            if (minor && set) {
-              set.add(minor);
-            }
-          } else if (minor) {
-            looseMinors.add(minor);
-          }
-        });
-      }
-
-      const validatedMajors = Array.isArray(state.validations['大分類']) ? state.validations['大分類'] : [];
-      validatedMajors.forEach(name => {
-        ensureMajor(name);
-      });
-
-      const validatedMinors = Array.isArray(state.validations['中分類']) ? state.validations['中分類'] : [];
-      validatedMinors.forEach(name => {
-        const text = String(name ?? '').trim();
-        if (!text) return;
-        let assigned = false;
-        majorMap.forEach(set => {
-          if (set.has(text)) assigned = true;
-        });
-        if (!assigned) {
-          looseMinors.add(text);
-        }
-      });
-
-      const majorList = Array.from(majorMap.keys()).sort((a, b) => a.localeCompare(b, 'ja'));
-      const minorMap = new Map();
-      majorList.forEach(major => {
-        const minors = Array.from(majorMap.get(major) ?? new Set())
-          .sort((a, b) => a.localeCompare(b, 'ja'));
-        minorMap.set(major, minors);
-      });
-
-      const allMinorsSet = new Set();
-      minorMap.forEach(list => {
-        list.forEach(value => allMinorsSet.add(value));
-      });
-      looseMinors.forEach(value => allMinorsSet.add(value));
-
-      const allMinors = Array.from(allMinorsSet).sort((a, b) => a.localeCompare(b, 'ja'));
-
-      return { majorList, minorMap, allMinors };
     };
 
     const uniqAssignees = () => {
@@ -558,70 +467,6 @@
         });
       }
 
-      const majorSel = container.querySelector('#flt-major');
-      const minorSel = container.querySelector('#flt-minor');
-      if (majorSel && minorSel) {
-        const { majorList, minorMap, allMinors } = collectCategoryOptions();
-        let currentMajor = filters.category?.major ?? constants.CATEGORY_FILTER_ALL;
-        let currentMinor = filters.category?.minor ?? constants.CATEGORY_FILTER_MINOR_ALL;
-
-        if (!majorList.includes(currentMajor)) {
-          currentMajor = constants.CATEGORY_FILTER_ALL;
-          filters.category.major = constants.CATEGORY_FILTER_ALL;
-        }
-
-        const majorOptions = [
-          `<option value="${constants.CATEGORY_FILTER_ALL}">（すべて）</option>`
-        ].concat(majorList.map(name => `<option value="${name}">${name}</option>`));
-        majorSel.innerHTML = majorOptions.join('');
-        majorSel.value = currentMajor;
-
-        const renderMinorOptions = ({ preserve = false } = {}) => {
-          const isAllMajor = currentMajor === constants.CATEGORY_FILTER_ALL;
-          const majorsMinors = isAllMajor ? (allMinors || []) : (minorMap.get(currentMajor) || []);
-          const minorOptions = [
-            `<option value="${constants.CATEGORY_FILTER_MINOR_ALL}">（すべて）</option>`
-          ].concat(majorsMinors.map(name => `<option value="${name}">${name}</option>`));
-          minorSel.innerHTML = minorOptions.join('');
-
-          if (!preserve) {
-            currentMinor = constants.CATEGORY_FILTER_MINOR_ALL;
-          }
-
-          if (currentMinor !== constants.CATEGORY_FILTER_MINOR_ALL && !majorsMinors.includes(currentMinor)) {
-            currentMinor = constants.CATEGORY_FILTER_MINOR_ALL;
-          }
-
-          if (majorsMinors.length === 0) {
-            currentMinor = constants.CATEGORY_FILTER_MINOR_ALL;
-            minorSel.disabled = true;
-          } else {
-            minorSel.disabled = false;
-          }
-
-          filters.category.minor = currentMinor;
-          minorSel.value = currentMinor;
-        };
-
-        renderMinorOptions({ preserve: true });
-
-        majorSel.onchange = () => {
-          currentMajor = majorSel.value;
-          filters.category.major = currentMajor;
-          if (currentMajor !== constants.CATEGORY_FILTER_ALL) {
-            currentMinor = constants.CATEGORY_FILTER_MINOR_ALL;
-          }
-          renderMinorOptions({ preserve: currentMajor === constants.CATEGORY_FILTER_ALL });
-          notifyChange();
-        };
-
-        minorSel.onchange = () => {
-          currentMinor = minorSel.value;
-          filters.category.minor = currentMinor;
-          notifyChange();
-        };
-      }
-
       const assigneeSel = container.querySelector('#flt-assignee');
       if (assigneeSel) {
         const selected = filters.assignee;
@@ -707,20 +552,8 @@
       const statuses = filters.statuses;
       const df = filters.date;
       const keyword = (filters.keyword || '').trim().toLowerCase();
-      const majorFilter = filters.category?.major ?? constants.CATEGORY_FILTER_ALL;
-      const minorFilter = filters.category?.minor ?? constants.CATEGORY_FILTER_MINOR_ALL;
-
-      const shouldFilterMajor = majorFilter !== constants.CATEGORY_FILTER_ALL;
-      const shouldFilterMinor = minorFilter !== constants.CATEGORY_FILTER_MINOR_ALL;
 
       return source.filter(t => {
-        if (shouldFilterMajor || shouldFilterMinor) {
-          const major = String(t?.大分類 ?? '').trim();
-          const minor = String(t?.中分類 ?? '').trim();
-          if (shouldFilterMajor && major !== majorFilter) return false;
-          if (shouldFilterMinor && minor !== minorFilter) return false;
-        }
-
         const who = String(t?.担当者 ?? '').trim();
         if (assignee === constants.ASSIGNEE_FILTER_UNASSIGNED) {
           if (who) return false;

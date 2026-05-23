@@ -6,6 +6,8 @@ const {
   parseISO,
   getDueState,
   getPriorityLevel,
+  getAncestorIds,
+  getChildCount,
 } = window.TaskAppCommon;
 
 const {
@@ -28,8 +30,6 @@ const {
     ASSIGNEE_FILTER_ALL,
     ASSIGNEE_FILTER_UNASSIGNED,
     ASSIGNEE_UNASSIGNED_LABEL,
-    CATEGORY_FILTER_ALL,
-    CATEGORY_FILTER_MINOR_ALL,
   },
 } = window.TaskFilterUI;
 
@@ -41,7 +41,7 @@ let RUN_MODE = 'mock';    // 'mock' | 'pywebview'
 let excelSyncHandlers = null;
 
 /* ===================== 状態 ===================== */
-const VALIDATION_COLUMNS = ["ステータス", "大分類", "中分類", "タスク", "担当者", "優先度", "期限", "備考"];
+const VALIDATION_COLUMNS = ["ステータス", "タスク", "担当者", "優先度", "期限", "備考"];
 let STATUSES = [];
 let TASKS = [];
 let CURRENT_EDIT = null;
@@ -248,11 +248,70 @@ async function init(force = false) {
 }
 
 /* ===================== レンダリング ===================== */
+const KANBAN_TREE_EXPAND_STATE = new Map();
+
+function getChildStats(task, sourceTasks) {
+  const id = String(task.__kanban_id ?? '').trim();
+  if (!id) return null;
+  const children = (sourceTasks || TASKS).filter(t => String(t.__parent_id ?? '').trim() === id);
+  if (children.length === 0) return null;
+  const total = children.length;
+  const completed = children.filter(t => {
+    const s = String(t.ステータス ?? '').trim();
+    return s === '完了' || s === '完了済み' || s === '完了済';
+  }).length;
+  return { total, completed, children };
+}
+
+function hasChildren(taskId) {
+  const id = String(taskId ?? '').trim();
+  if (!id) return false;
+  return TASKS.some(t => String(t.__parent_id ?? '').trim() === id);
+}
+
+function ensureKanbanExpandDefaults(filteredTasks) {
+  const list = Array.isArray(filteredTasks) ? filteredTasks : TASKS;
+  list.forEach(task => {
+    const kanbanId = String(task.__kanban_id ?? '').trim();
+    if (!kanbanId) return;
+    if (!KANBAN_TREE_EXPAND_STATE.has(kanbanId) && hasChildren(kanbanId)) {
+      KANBAN_TREE_EXPAND_STATE.set(kanbanId, true);
+    }
+  });
+}
+
+function getFilteredTasksTreeAware() {
+  const base = filterController?.applyFilters(TASKS) ?? TASKS;
+  const baseSet = new Set(base.map(t => String(t.__kanban_id ?? '').trim()));
+  const ancestorsToAdd = new Set();
+
+  for (const task of base) {
+    const pid = String(task.__parent_id ?? '').trim();
+    if (!pid) continue;
+    const ancestors = getAncestorIds(task.__kanban_id, TASKS) || [];
+    ancestors.forEach(id => {
+      if (!baseSet.has(id)) ancestorsToAdd.add(id);
+    });
+  }
+
+  if (ancestorsToAdd.size === 0) return base;
+
+  const parentTasks = TASKS.filter(t => ancestorsToAdd.has(String(t.__kanban_id ?? '').trim()));
+  return [...base, ...parentTasks];
+}
+
 function renderBoard() {
   const board = document.getElementById('board');
   board.innerHTML = '';
 
-  const FILTERED = getFilteredTasks();  // ← 追加
+  const FILTERED = getFilteredTasksTreeAware();
+  ensureKanbanExpandDefaults(FILTERED);
+
+  const childStatsMap = new Map();
+  for (const task of FILTERED) {
+    const stats = getChildStats(task, TASKS);
+    if (stats) childStatsMap.set(String(task.__kanban_id ?? '').trim(), stats);
+  }
 
   STATUSES.forEach(status => {
     const columnTasks = FILTERED.filter(t => normalizeStatusLabel(t.ステータス) === status);
@@ -271,7 +330,6 @@ function renderBoard() {
     title.textContent = status;
     const count = document.createElement('div');
     count.className = 'column-count';
-    // ↓ 絞り込み済みから件数を出す
     count.textContent = `${columnTasks.length} 件`;
 
     header.appendChild(title);
@@ -285,12 +343,46 @@ function renderBoard() {
     drop.addEventListener('dragleave', () => drop.classList.remove('dragover'));
     drop.addEventListener('drop', e => onDropCard(e, status, drop));
 
-    // ↓ 絞り込み済みから、その列のカードを描画
-    columnTasks
-      .sort((a, b) => compareDueValues(a, b)
+    const sorted = columnTasks.slice().sort((a, b) => {
+      const aRoot = !a.__parent_id;
+      const bRoot = !b.__parent_id;
+      if (aRoot && !bRoot) return -1;
+      if (!aRoot && bRoot) return 1;
+      return compareDueValues(a, b)
         || comparePriorityValues(a.優先度, b.優先度)
-        || (a.No || 0) - (b.No || 0))
-      .forEach(task => drop.appendChild(renderCard(task)));
+        || (a.No || 0) - (b.No || 0);
+    });
+
+    const renderedIds = new Set();
+    const renderList = [];
+
+    sorted.forEach(task => {
+      const kanbanId = String(task.__kanban_id ?? '').trim();
+      if (renderedIds.has(kanbanId)) return;
+
+      const parentId = String(task.__parent_id ?? '').trim();
+      if (parentId && renderedIds.has(parentId)) return;
+
+      const stats = childStatsMap.get(kanbanId) || null;
+      const expanded = stats && KANBAN_TREE_EXPAND_STATE.get(kanbanId) !== false;
+
+      renderList.push({ task, stats, depth: 0 });
+      renderedIds.add(kanbanId);
+
+      if (expanded && stats) {
+        stats.children.forEach(child => {
+          const cid = String(child.__kanban_id ?? '').trim();
+          if (renderedIds.has(cid)) return;
+          if (normalizeStatusLabel(child.ステータス) !== status) return;
+          renderList.push({ task: child, stats: null, depth: 1 });
+          renderedIds.add(cid);
+        });
+      }
+    });
+
+    renderList.forEach(({ task, stats, depth }) => {
+      drop.appendChild(renderCard(task, { depth, childStats: stats }));
+    });
 
     body.appendChild(drop);
     col.appendChild(header);
@@ -320,71 +412,6 @@ function uniqAssignees() {
   const set = new Set();
   TASKS.forEach(t => { if ((t.担当者 || '').trim()) set.add(t.担当者.trim()); });
   return Array.from(set).sort((a, b) => a.localeCompare(b, 'ja'));
-}
-
-function collectCategoryOptions() {
-  const majorMap = new Map();
-  const looseMinors = new Set();
-
-  const ensureMajor = (name) => {
-    const text = String(name ?? '').trim();
-    if (!text) return null;
-    if (!majorMap.has(text)) {
-      majorMap.set(text, new Set());
-    }
-    return majorMap.get(text);
-  };
-
-  if (Array.isArray(TASKS)) {
-    TASKS.forEach(task => {
-      const major = String(task?.大分類 ?? '').trim();
-      const minor = String(task?.中分類 ?? '').trim();
-      if (major) {
-        const set = ensureMajor(major);
-        if (minor && set) {
-          set.add(minor);
-        }
-      } else if (minor) {
-        looseMinors.add(minor);
-      }
-    });
-  }
-
-  const validatedMajors = Array.isArray(VALIDATIONS['大分類']) ? VALIDATIONS['大分類'] : [];
-  validatedMajors.forEach(name => {
-    ensureMajor(name);
-  });
-
-  const validatedMinors = Array.isArray(VALIDATIONS['中分類']) ? VALIDATIONS['中分類'] : [];
-  validatedMinors.forEach(name => {
-    const text = String(name ?? '').trim();
-    if (!text) return;
-    let assigned = false;
-    majorMap.forEach(set => {
-      if (set.has(text)) assigned = true;
-    });
-    if (!assigned) {
-      looseMinors.add(text);
-    }
-  });
-
-  const majorList = Array.from(majorMap.keys()).sort((a, b) => a.localeCompare(b, 'ja'));
-  const minorMap = new Map();
-  majorList.forEach(major => {
-    const minors = Array.from(majorMap.get(major) ?? new Set())
-      .sort((a, b) => a.localeCompare(b, 'ja'));
-    minorMap.set(major, minors);
-  });
-
-  const allMinorsSet = new Set();
-  minorMap.forEach(list => {
-    list.forEach(value => allMinorsSet.add(value));
-  });
-  looseMinors.forEach(value => allMinorsSet.add(value));
-
-  const allMinors = Array.from(allMinorsSet).sort((a, b) => a.localeCompare(b, 'ja'));
-
-  return { majorList, minorMap, allMinors };
 }
 
 const PRIORITY_LABEL_ORDER = new Map([
@@ -433,11 +460,15 @@ function compareDueValues(a, b) {
   return 0;
 }
 
-function renderCard(task) {
+function renderCard(task, options = {}) {
+  const { depth = 0, childStats = null } = options;
+
   const el = document.createElement('article');
   el.className = 'card';
+  if (depth > 0) el.classList.add('card-child');
   el.draggable = true;
   el.dataset.no = task.No;
+  el.dataset.kanbanId = task.__kanban_id || '';
 
   const dueState = getDueState(task);
   if (dueState?.level === 'overdue') {
@@ -448,31 +479,38 @@ function renderCard(task) {
 
   el.addEventListener('dragstart', e => {
     e.dataTransfer.setData('text/plain', String(task.No));
-    e.dataTransfer.dropEffect = 'move';
+    e.dataTransfer.effectAllowed = 'move';
+  });
+
+  el.addEventListener('dragover', e => {
+    e.preventDefault();
+    e.stopPropagation();
+    el.classList.add('card-dragover');
+  });
+
+  el.addEventListener('dragleave', () => {
+    el.classList.remove('card-dragover');
+  });
+
+  el.addEventListener('drop', e => {
+    e.preventDefault();
+    e.stopPropagation();
+    el.classList.remove('card-dragover');
+    onDropToCard(e, task.No);
   });
 
   el.addEventListener('dblclick', () => openEdit(task.No));
 
-  const category = document.createElement('div');
-  category.className = 'card-category';
-  let hasCategory = false;
-  if (task.大分類) {
-    const major = document.createElement('span');
-    major.className = 'badge badge-major';
-    major.textContent = task.大分類;
-    category.appendChild(major);
-    hasCategory = true;
-  }
-  if (task.中分類) {
-    const minor = document.createElement('span');
-    minor.className = 'badge badge-minor';
-    minor.textContent = task.中分類;
-    category.appendChild(minor);
-    hasCategory = true;
-  }
-
   const header = document.createElement('div');
   header.className = 'card-header';
+
+  if (depth > 0) {
+    const indent = document.createElement('span');
+    indent.className = 'card-child-arrow';
+    indent.textContent = '↳';
+    header.appendChild(indent);
+  }
+
   const title = document.createElement('div');
   title.className = 'card-title';
   title.textContent = task.タスク || '(無題)';
@@ -482,9 +520,73 @@ function renderCard(task) {
   header.appendChild(title);
   header.appendChild(no);
 
-  if (hasCategory) {
-    el.appendChild(category);
+  const parentLabel = document.createElement('div');
+  parentLabel.className = 'card-parent-label';
+  if (task.__parent_id && depth === 0) {
+    const parentTask = TASKS.find(t => String(t.__kanban_id ?? '').trim() === task.__parent_id);
+    const parentName = parentTask ? (parentTask.タスク || '(無題)') : task.__parent_id;
+    parentLabel.innerHTML = `<span class="parent-arrow">&darr;</span> <span class="parent-link" data-parent-id="${task.__parent_id}">${parentName}</span>`;
   }
+
+  el.appendChild(header);
+  if (task.__parent_id && depth === 0) {
+    el.appendChild(parentLabel);
+  }
+
+  if (childStats && childStats.total > 0) {
+    const childInfo = document.createElement('div');
+    childInfo.className = 'card-child-info';
+
+    const kanbanId = String(task.__kanban_id ?? '').trim();
+    const expanded = KANBAN_TREE_EXPAND_STATE.get(kanbanId) !== false;
+
+    const topRow = document.createElement('div');
+    topRow.className = 'card-child-top';
+
+    const toggle = document.createElement('span');
+    toggle.className = 'card-child-toggle';
+    toggle.textContent = expanded ? '▼' : '▶';
+    toggle.title = expanded ? '子タスクを折りたたむ' : '子タスクを展開';
+    toggle.addEventListener('click', e => {
+      e.stopPropagation();
+      const cur = KANBAN_TREE_EXPAND_STATE.get(kanbanId) !== false;
+      KANBAN_TREE_EXPAND_STATE.set(kanbanId, !cur);
+      renderBoard();
+    });
+    topRow.appendChild(toggle);
+
+    const badge = document.createElement('span');
+    badge.className = 'card-child-badge';
+    badge.textContent = `${childStats.total}件の子タスク`;
+    topRow.appendChild(badge);
+
+    topRow.appendChild(document.createElement('span'));
+
+    childInfo.appendChild(topRow);
+
+    const progressWrap = document.createElement('div');
+    progressWrap.className = 'card-child-progress-wrap';
+
+    const progress = document.createElement('div');
+    progress.className = 'card-child-progress';
+    const bar = document.createElement('div');
+    bar.className = 'card-child-progress-bar';
+    const pct = Math.round(childStats.completed / childStats.total * 100);
+    bar.style.width = `${pct}%`;
+    if (pct === 100) bar.classList.add('complete');
+    progress.appendChild(bar);
+    progressWrap.appendChild(progress);
+
+    const label = document.createElement('span');
+    label.className = 'card-child-progress-label';
+    label.textContent = `${childStats.completed}/${childStats.total} 完了`;
+    if (pct === 100) label.classList.add('complete');
+    progressWrap.appendChild(label);
+
+    childInfo.appendChild(progressWrap);
+    el.appendChild(childInfo);
+  }
+
   const meta = document.createElement('div');
   meta.className = 'card-meta';
   if (task.優先度 !== undefined && task.優先度 !== null && String(task.優先度).trim() !== '') {
@@ -517,7 +619,6 @@ function renderCard(task) {
   notes.className = 'card-notes';
   notes.textContent = task.備考 || '';
 
-  el.appendChild(header);
   el.appendChild(meta);
   el.appendChild(notes);
   return el;
@@ -539,6 +640,49 @@ async function onDropCard(e, newStatus, dropzone) {
   } catch (err) {
     alert('移動に失敗しました: ' + (err?.message || err));
   }
+}
+
+async function onDropToCard(e, targetNo) {
+  const no = parseInt(e.dataTransfer.getData('text/plain'), 10);
+  if (!no || no === targetNo) return;
+
+  const targetTask = TASKS.find(t => t.No === targetNo);
+  const sourceTask = TASKS.find(t => t.No === no);
+  if (!targetTask || !sourceTask) return;
+
+  const targetId = String(targetTask.__kanban_id ?? '').trim();
+  const sourceId = String(sourceTask.__kanban_id ?? '').trim();
+
+  const targetParentId = String(targetTask.__parent_id ?? '').trim();
+  if (targetParentId && targetParentId === sourceId) {
+    if (!confirm('このカードを親から外しますか？')) return;
+    try {
+      await api.update_task(no, { __parent_id: '' });
+      TASKS = sanitizeTaskList(await api.get_tasks());
+    } catch (err) {
+      alert('親子関係の解除に失敗しました: ' + (err?.message || err));
+    }
+    renderBoard();
+    return;
+  }
+
+  if (getAncestorIds(targetId, TASKS).includes(sourceId)) {
+    alert('循環参照になるため設定できません。');
+    return;
+  }
+
+  if (!confirm(`「${sourceTask.タスク}」を「${targetTask.タスク}」の子タスクにしますか？`)) return;
+
+  try {
+    await api.update_task(no, { __parent_id: targetId });
+    TASKS = sanitizeTaskList(await api.get_tasks());
+    if (typeof window.showToast === 'function') {
+      window.showToast('親タスクを設定しました', 'success');
+    }
+  } catch (err) {
+    alert('親子関係の設定に失敗しました: ' + (err?.message || err));
+  }
+  renderBoard();
 }
 
 /* ===================== ツールバー ===================== */
@@ -571,18 +715,17 @@ function openValidationModal(options = {}) {
 }
 
 function getFilteredTasks() {
-  return filterController?.applyFilters(TASKS) ?? TASKS;
+  return getFilteredTasksTreeAware();
 }
 
 
 /* ===================== モーダル: 追加/編集 ===================== */
-function openCreate() {
+function openCreate(defaults = {}) {
   CURRENT_EDIT = null;
   openModal({
     No: '',
     ステータス: STATUSES[0] || '未着手',
-    大分類: '',
-    中分類: '',
+    __parent_id: defaults.parent_id || '',
     タスク: '',
     担当者: '',
     優先度: getDefaultPriorityValue(),
@@ -595,68 +738,6 @@ function openEdit(no) {
   if (!t) return;
   CURRENT_EDIT = no;
   openModal(t, { mode: 'edit' });
-}
-
-function setupCategoryInputSuggestions(fmajor, fminor) {
-  const majorListEl = document.getElementById('modal-major-list');
-  const minorListEl = document.getElementById('modal-minor-list');
-  if (!majorListEl && !minorListEl) return;
-
-  const { majorList, minorMap, allMinors } = collectCategoryOptions();
-
-  const fillOptions = (datalist, values) => {
-    if (!datalist) return;
-    datalist.innerHTML = '';
-    if (!Array.isArray(values)) return;
-    const seen = new Set();
-    values.forEach(value => {
-      const text = String(value ?? '').trim();
-      if (!text || seen.has(text)) return;
-      seen.add(text);
-      const opt = document.createElement('option');
-      opt.value = text;
-      datalist.appendChild(opt);
-    });
-  };
-
-  fillOptions(majorListEl, majorList);
-
-  const fallbackMinors = Array.isArray(allMinors) ? allMinors : [];
-  const updateMinorOptions = () => {
-    if (!minorListEl) return;
-    const majorValue = String(fmajor?.value ?? '').trim();
-    let candidates = fallbackMinors;
-    if (majorValue && minorMap.has(majorValue)) {
-      const list = minorMap.get(majorValue) || [];
-      if (Array.isArray(list) && list.length > 0) {
-        candidates = list;
-      }
-    }
-    fillOptions(minorListEl, candidates);
-  };
-
-  updateMinorOptions();
-
-  if (fmajor && minorListEl) {
-    if (typeof fmajor.__minorListHandler === 'function') {
-      fmajor.removeEventListener('input', fmajor.__minorListHandler);
-      fmajor.removeEventListener('change', fmajor.__minorListHandler);
-    }
-    const handler = () => updateMinorOptions();
-    fmajor.__minorListHandler = handler;
-    fmajor.addEventListener('input', handler);
-    fmajor.addEventListener('change', handler);
-  }
-
-  if (fminor && minorListEl) {
-    // Ensure the list is refreshed when the field gains focus after manual edits.
-    if (typeof fminor.__minorListRefresh === 'function') {
-      fminor.removeEventListener('focus', fminor.__minorListRefresh);
-    }
-    const refresh = () => updateMinorOptions();
-    fminor.__minorListRefresh = refresh;
-    fminor.addEventListener('focus', refresh);
-  }
 }
 
 function setupAssigneeInputSuggestions(fassignee) {
@@ -692,14 +773,15 @@ function openModal(task, { mode }) {
   const title = document.getElementById('modal-title');
   const fno = document.getElementById('f-no');
   const fstat = document.getElementById('f-status');
-  const fmajor = document.getElementById('f-major');
-  const fminor = document.getElementById('f-minor');
+  const fparent = document.getElementById('f-parent');
+  const fparentHidden = document.getElementById('f-parent-hidden');
   const fttl = document.getElementById('f-title');
   const fwho = document.getElementById('f-assignee');
   const fprio = document.getElementById('f-priority');
   const fdue = document.getElementById('f-due');
   const fnote = document.getElementById('f-notes');
   const btnDelete = document.getElementById('btn-delete');
+  const btnAddChildTask = document.getElementById('btn-add-child-task');
 
   title.textContent = mode === 'create' ? 'タスク追加' : 'タスク編集';
 
@@ -713,9 +795,22 @@ function openModal(task, { mode }) {
 
   fno.value = task.No ?? '';
   fstat.value = task.ステータス || STATUSES[0] || '未着手';
-  if (fmajor) fmajor.value = task.大分類 || '';
-  if (fminor) fminor.value = task.中分類 || '';
-  setupCategoryInputSuggestions(fmajor, fminor);
+
+  // 親タスク選択UI
+  if (fparent && fparentHidden) {
+    const currentParentId = task.__parent_id || '';
+    fparentHidden.value = currentParentId;
+    if (currentParentId) {
+      const parentTask = TASKS.find(t => String(t.__kanban_id ?? '').trim() === currentParentId);
+      fparent.value = parentTask ? parentTask.タスク : currentParentId;
+    } else {
+      fparent.value = '';
+    }
+    if (typeof window.TaskModalHelper?.setupParentTaskSelector === 'function') {
+      window.TaskModalHelper.setupParentTaskSelector(fparent, fparentHidden, TASKS, task.__kanban_id || '');
+    }
+  }
+
   fttl.value = task.タスク || '';
   fwho.value = task.担当者 || '';
   setupAssigneeInputSuggestions(fwho);
@@ -730,9 +825,15 @@ function openModal(task, { mode }) {
   document.getElementById('btn-cancel').onclick = closeModal;
   btnDelete.onclick = async () => {
     if (!CURRENT_EDIT) return;
-    if (!confirm('削除しますか？')) return;
+    const currentTask = TASKS.find(x => x.No === CURRENT_EDIT);
+    const childCount = currentTask ? TASKS.filter(t => String(t.__parent_id ?? '').trim() === String(currentTask.__kanban_id ?? '').trim()).length : 0;
+    let confirmMsg = '削除しますか？';
+    if (childCount > 0) {
+      confirmMsg = `このタスクには ${childCount} 件の子タスクがあります。子タスクもすべて削除しますか？\n\nOK = すべて削除 / キャンセル = 削除中止`;
+    }
+    if (!confirm(confirmMsg)) return;
     try {
-      const ok = await api.delete_task(CURRENT_EDIT);
+      const ok = await api.delete_task(CURRENT_EDIT, true);
       if (ok) {
         if (typeof api.get_tasks === 'function') {
           TASKS = sanitizeTaskList(await api.get_tasks());
@@ -759,13 +860,69 @@ function openModal(task, { mode }) {
     }
   };
 
+  btnAddChildTask.onclick = async () => {
+    const payload = {
+      ステータス: denormalizeStatusLabel(fstat.value),
+      __parent_id: fparentHidden ? fparentHidden.value.trim() : '',
+      タスク: fttl.value.trim(),
+      担当者: fwho.value.trim(),
+      優先度: (fprio.value ?? '').trim(),
+      期限: fdue.value ? fdue.value : '',
+      備考: fnote.value
+    };
+
+    if (!payload.タスク) {
+      alert('タスクを入力してください。');
+      fttl.focus();
+      return;
+    }
+
+    try {
+      let savedKanbanId = null;
+      if (mode === 'create') {
+        const created = await api.add_task(payload);
+        const sanitized = sanitizeTaskRecord(created, TASKS.length);
+        if (sanitized) {
+          TASKS.push(sanitized);
+          savedKanbanId = sanitized.__kanban_id || null;
+        }
+      } else {
+        const no = CURRENT_EDIT;
+        const updated = await api.update_task(no, payload);
+        const i = TASKS.findIndex(x => x.No === no);
+        if (i >= 0) {
+          const sanitized = sanitizeTaskRecord(updated, i);
+          if (sanitized) {
+            TASKS[i] = sanitized;
+            savedKanbanId = sanitized.__kanban_id || null;
+          } else {
+            TASKS.splice(i, 1);
+          }
+        }
+      }
+      CURRENT_EDIT = null;
+      closeModal();
+      filterController?.updateData({
+        tasks: TASKS,
+        statuses: STATUSES,
+        validations: VALIDATIONS,
+        preserveStatusSelection: true,
+      });
+      renderBoard();
+      if (savedKanbanId) {
+        openCreate({ parent_id: savedKanbanId });
+      }
+    } catch (err) {
+      alert('保存に失敗: ' + (err?.message || err));
+    }
+  };
+
   const form = document.getElementById('task-form');
   form.onsubmit = async (e) => {
     e.preventDefault();
     const payload = {
       ステータス: denormalizeStatusLabel(fstat.value),
-      大分類: fmajor ? fmajor.value.trim() : '',
-      中分類: fminor ? fminor.value.trim() : '',
+      __parent_id: fparentHidden ? fparentHidden.value.trim() : '',
       タスク: fttl.value.trim(),
       担当者: fwho.value.trim(),
       優先度: (fprio.value ?? '').trim(),

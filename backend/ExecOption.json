@@ -1,0 +1,13 @@
+{
+  "excel": ".\\data\\task.xlsx",
+  "html": "./frontend/pages/index.html",
+  "title": "タスク・ボード",
+  "width": 1280,
+  "height": 800,
+  "sheet": "タスク",
+  "debug": false,
+  "no_watch": false,
+  "watch_polling": false,
+  "watch_interval": 1.0,
+  "watch_debounce": 2.0
+}

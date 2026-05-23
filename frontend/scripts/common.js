@@ -66,31 +66,25 @@
     const pad = (n) => String(n).padStart(2, '0');
     const toISO = (date) => `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
     const today = new Date();
-    const majorCategories = ['プロジェクトA', 'プロジェクトB', 'プロジェクトC'];
-    const minorCategories = ['企画', '設計', '実装', '検証'];
     const sampleTasks = Array.from({ length: 8 }).map((_, idx) => {
       const due = new Date(today);
       due.setDate(today.getDate() + idx - 2);
       const status = baseStatuses[idx % baseStatuses.length];
       statusSet.add(status);
-      const major = majorCategories[idx % majorCategories.length];
-      const minor = minorCategories[idx % minorCategories.length];
       return {
         ステータス: status,
-        大分類: major,
-        中分類: minor,
         タスク: `サンプルタスク ${idx + 1}`,
         担当者: ['田中', '佐藤', '鈴木', '高橋'][idx % 4],
         優先度: ['高', '中', '低'][idx % 3],
         期限: toISO(due),
-        備考: idx % 2 === 0 ? 'モックデータ' : ''
+        備考: idx % 2 === 0 ? 'モックデータ' : '',
+        __kanban_id: 'mock_' + (idx + 1),
+        __parent_id: '',
       };
     });
     const tasks = [...sampleTasks];
     let validations = {
       'ステータス': Array.from(statusSet),
-      '大分類': Array.from(new Set(majorCategories)),
-      '中分類': Array.from(new Set(minorCategories)),
       '優先度': [...PRIORITY_DEFAULT_OPTIONS]
     };
 
@@ -119,9 +113,6 @@
       const status = sanitizeStatus(payload?.ステータス);
       statusSet.add(status);
 
-      const major = String(payload?.大分類 ?? '').trim();
-      const minor = String(payload?.中分類 ?? '').trim();
-
       const title = String(payload?.タスク ?? '').trim();
       if (!title) {
         throw new Error('タスクは必須です');
@@ -129,13 +120,13 @@
 
       return {
         ステータス: status,
-        大分類: major,
-        中分類: minor,
         タスク: title,
         担当者: String(payload?.担当者 ?? '').trim(),
         優先度: normalizePriority(payload?.優先度),
         期限: toIsoDate(payload?.期限),
-        備考: String(payload?.備考 ?? '')
+        備考: String(payload?.備考 ?? ''),
+        __kanban_id: payload?.__kanban_id || 'mock_' + (tasks.length + 1),
+        __parent_id: String(payload?.__parent_id ?? '').trim(),
       };
     };
 
@@ -853,69 +844,103 @@
     return `${date.getFullYear()}年${date.getMonth() + 1}月${date.getDate()}日`;
   }
 
-  function collectCategoryOptions(tasks, validations) {
-    const majorMap = new Map();
-    const looseMinors = new Set();
-
-    const ensureMajor = (name) => {
-      const text = String(name ?? '').trim();
-      if (!text) return null;
-      if (!majorMap.has(text)) {
-        majorMap.set(text, new Set());
-      }
-      return majorMap.get(text);
-    };
-
-    if (Array.isArray(tasks)) {
-      tasks.forEach(task => {
-        const major = String(task?.大分類 ?? '').trim();
-        const minor = String(task?.中分類 ?? '').trim();
-        if (major) {
-          const set = ensureMajor(major);
-          if (minor && set) {
-            set.add(minor);
-          }
-        } else if (minor) {
-          looseMinors.add(minor);
-        }
-      });
+  function buildTaskTree(tasks) {
+    const list = Array.isArray(tasks) ? tasks : [];
+    const map = new Map();
+    const roots = [];
+    for (const t of list) {
+      const id = String(t?.__kanban_id ?? '').trim();
+      if (!id) continue;
+      map.set(id, { ...t, children: [] });
     }
-
-    const validatedMajors = Array.isArray(validations && validations['大分類']) ? validations['大分類'] : [];
-    validatedMajors.forEach(name => {
-      ensureMajor(name);
-    });
-
-    const validatedMinors = Array.isArray(validations && validations['中分類']) ? validations['中分類'] : [];
-    validatedMinors.forEach(name => {
-      const text = String(name ?? '').trim();
-      if (!text) return;
-      let assigned = false;
-      majorMap.forEach(set => {
-        if (set.has(text)) assigned = true;
-      });
-      if (!assigned) {
-        looseMinors.add(text);
+    for (const t of map.values()) {
+      const pid = String(t.__parent_id ?? '').trim();
+      if (pid && map.has(pid)) {
+        map.get(pid).children.push(t);
+      } else {
+        roots.push(t);
       }
-    });
+    }
+    return roots;
+  }
 
-    const majorList = Array.from(majorMap.keys()).sort((a, b) => a.localeCompare(b, 'ja'));
-    const minorMap = new Map();
-    majorList.forEach(major => {
-      const minors = Array.from(majorMap.get(major) ?? new Set())
-        .sort((a, b) => a.localeCompare(b, 'ja'));
-      minorMap.set(major, minors);
-    });
+  function flattenTree(nodes, depth) {
+    const d = typeof depth === 'number' ? depth : 0;
+    const list = Array.isArray(nodes) ? nodes : [];
+    const result = [];
+    for (const node of list) {
+      const flat = { ...node, _depth: d, _hasChildren: Array.isArray(node.children) && node.children.length > 0 };
+      delete flat.children;
+      result.push(flat);
+      if (Array.isArray(node.children) && node.children.length > 0) {
+        result.push(...flattenTree(node.children, d + 1));
+      }
+    }
+    return result;
+  }
 
-    const allMinorsSet = new Set();
-    minorMap.forEach(list => {
-      list.forEach(value => allMinorsSet.add(value));
-    });
-    looseMinors.forEach(value => allMinorsSet.add(value));
+  function getDescendantIds(taskId, tasks) {
+    const id = String(taskId ?? '').trim();
+    if (!id) return [];
+    const list = Array.isArray(tasks) ? tasks : [];
+    const result = [];
+    const queue = [id];
+    while (queue.length > 0) {
+      const current = queue.shift();
+      for (const t of list) {
+        if (String(t?.__parent_id ?? '').trim() === current) {
+          const childId = String(t.__kanban_id ?? '').trim();
+          if (childId && !result.includes(childId)) {
+            result.push(childId);
+            queue.push(childId);
+          }
+        }
+      }
+    }
+    return result;
+  }
 
-    const allMinors = Array.from(allMinorsSet).sort((a, b) => a.localeCompare(b, 'ja'));
+  function getAncestorIds(taskId, tasks) {
+    const id = String(taskId ?? '').trim();
+    if (!id) return [];
+    const list = Array.isArray(tasks) ? tasks : [];
+    const result = [];
+    const visited = new Set();
+    let current = id;
+    while (current) {
+      if (visited.has(current)) break;
+      visited.add(current);
+      const task = list.find(t => String(t?.__kanban_id ?? '').trim() === current);
+      if (!task) break;
+      const pid = String(task.__parent_id ?? '').trim();
+      if (!pid) break;
+      result.push(pid);
+      current = pid;
+    }
+    return result;
+  }
 
-    return { majorList, minorMap, allMinors };
+  function isAncestor(candidateId, targetId, tasks) {
+    const ancestors = getAncestorIds(targetId, tasks);
+    return ancestors.includes(String(candidateId ?? '').trim());
+  }
+
+  function getParentTask(taskId, tasks) {
+    const id = String(taskId ?? '').trim();
+    if (!id) return null;
+    const list = Array.isArray(tasks) ? tasks : [];
+    const task = list.find(t => String(t?.__kanban_id ?? '').trim() === id);
+    if (!task) return null;
+    const pid = String(task.__parent_id ?? '').trim();
+    if (!pid) return null;
+    return list.find(t => String(t?.__kanban_id ?? '').trim() === pid) || null;
+  }
+
+  function getChildCount(taskId, tasks) {
+    const id = String(taskId ?? '').trim();
+    if (!id) return 0;
+    const list = Array.isArray(tasks) ? tasks : [];
+    return list.filter(t => String(t?.__parent_id ?? '').trim() === id).length;
   }
 
   function uniqAssignees(tasks) {
@@ -961,7 +986,13 @@
     statusColor,
     toISODate,
     toLocaleDate,
-    collectCategoryOptions,
+    buildTaskTree,
+    flattenTree,
+    getDescendantIds,
+    getAncestorIds,
+    isAncestor,
+    getParentTask,
+    getChildCount,
     uniqAssignees,
     comparePriorityValues,
     sanitizeDOMId,

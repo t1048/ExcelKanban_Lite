@@ -20,6 +20,7 @@ from .constants import (
     DEFAULT_VALIDATIONS,
     HIDDEN_META_COLUMNS,
     META_ID_COLUMN,
+    PARENT_ID_COLUMN,
     TASK_COLUMNS,
 )
 from .utils import (
@@ -38,6 +39,7 @@ class TaskStore:
         self.excel_path = excel_path
         self._lock = threading.RLock()
         self._meta_id_column = META_ID_COLUMN
+        self._meta_parent_id_column = PARENT_ID_COLUMN
         self._df = pd.DataFrame(columns=TASK_COLUMNS + HIDDEN_META_COLUMNS)
         self._column_order: List[str] = list(TASK_COLUMNS) + list(HIDDEN_META_COLUMNS)
         self._statuses: List[str] = list(DEFAULT_STATUSES)
@@ -109,6 +111,44 @@ class TaskStore:
                 ordered_columns = TASK_COLUMNS + extra_columns
                 df = df[ordered_columns].copy()
 
+                # 大分類・中分類 → 親子階層の自動移行
+                if ("大分類" in df.columns or "中分類" in df.columns) and self._meta_parent_id_column not in df.columns:
+                    try:
+                        self._rotate_backups()
+                        backup_path = self.excel_path.parent / (
+                            f"{self.excel_path.stem}.bak_migrate_{dt.datetime.now().strftime('%Y%m%d_%H%M%S')}{self.excel_path.suffix}"
+                        )
+                        shutil.copy2(self.excel_path, backup_path)
+                        df = self._migrate_categories_to_hierarchy(df)
+                        # 移行結果をExcelに書き戻し
+                        wb_migration = load_workbook(self.excel_path)
+                        try:
+                            ws_mig = wb_migration[self._sheet_name or wb_migration.sheetnames[0]]
+                            ws_mig.delete_rows(1, ws_mig.max_row)
+                            cols_to_write = list(df.columns)
+                            ws_mig.append(cols_to_write)
+                            for col_idx, col_name in enumerate(cols_to_write, start=1):
+                                if col_name in HIDDEN_META_COLUMNS:
+                                    from openpyxl.utils import get_column_letter as _gl
+                                    ws_mig.column_dimensions[_gl(col_idx)].hidden = True
+                            for _, row_data in df.iterrows():
+                                values = []
+                                for col_name in cols_to_write:
+                                    val = row_data[col_name]
+                                    if pd.isna(val):
+                                        values.append(None)
+                                    else:
+                                        values.append(val)
+                                ws_mig.append(values)
+                            wb_migration.save(self.excel_path)
+                        finally:
+                            try:
+                                wb_migration.close()
+                            except Exception:
+                                pass
+                    except Exception as exc:
+                        print(f"[kanban] Category migration failed: {exc}")
+
                 df = df.dropna(how="all", subset=TASK_COLUMNS).reset_index(drop=True)
 
                 df["タスク"] = df["タスク"].apply(
@@ -116,8 +156,13 @@ class TaskStore:
                 )
                 df = df[df["タスク"] != ""].reset_index(drop=True)
 
+                text_columns = ["ステータス", "担当者", "備考"]
+                for col in text_columns:
+                    if col in df.columns:
+                        df[col] = df[col].apply(lambda v: "" if pd.isna(v) else str(v).strip())
+
                 if "期限" in df.columns:
-                    df["期限"] = pd.to_datetime(df["期限"], errors="coerce").dt.date
+                    df["期限"] = pd.to_datetime(df["期限"], errors="coerce").dt.date.astype(object)
 
                 had_meta_column = self._meta_id_column in df.columns
 
@@ -195,7 +240,7 @@ class TaskStore:
                 merged_df = merged_df[merged_df["タスク"] != ""].reset_index(drop=True)
 
                 if "期限" in merged_df.columns:
-                    merged_df["期限"] = pd.to_datetime(merged_df["期限"], errors="coerce").dt.date
+                    merged_df["期限"] = pd.to_datetime(merged_df["期限"], errors="coerce").dt.date.astype(object)
 
                 extra_columns = [col for col in merged_df.columns if col not in TASK_COLUMNS]
                 ordered_columns = TASK_COLUMNS + extra_columns
@@ -240,7 +285,164 @@ class TaskStore:
     def _ensure_meta_columns(self, df: pd.DataFrame) -> pd.DataFrame:
         if self._meta_id_column not in df.columns:
             df[self._meta_id_column] = pd.NA
+        if self._meta_parent_id_column not in df.columns:
+            df[self._meta_parent_id_column] = pd.NA
         return df
+
+    def _migrate_categories_to_hierarchy(self, df: pd.DataFrame) -> pd.DataFrame:
+        """大分類・中分類列を親子階層(__parent_id)に移行する。"""
+        has_major = "大分類" in df.columns
+        has_minor = "中分類" in df.columns
+        has_parent = self._meta_parent_id_column in df.columns
+
+        if has_parent or (not has_major and not has_minor):
+            return df
+
+        # バックアップは呼び出し側(load_excel)で実施済み
+        major_values = df["大分類"].apply(
+            lambda v: "" if pd.isna(v) else str(v).strip()
+        )
+        unique_majors = sorted(set(v for v in major_values if v))
+
+        # 大分類ごとに親タスク行を作成
+        parent_rows: List[Dict[str, Any]] = []
+        parent_id_map: Dict[str, str] = {}
+        for major_name in unique_majors:
+            parent_id = self._generate_row_id()
+            parent_id_map[major_name] = parent_id
+            parent_rows.append({
+                "ステータス": "未着手",
+                "タスク": major_name,
+                "担当者": "",
+                "優先度": "",
+                "期限": pd.NaT,
+                "備考": "",
+                self._meta_id_column: parent_id,
+                self._meta_parent_id_column: pd.NA,
+            })
+
+        # 元のタスクに__parent_idを設定し、中分類を備考に退避
+        parent_ids: List[Any] = []
+        # 備考列の型を文字列に統一（NaN混在時のfloat64問題回避）
+        if "備考" in df.columns:
+            df["備考"] = df["備考"].apply(lambda v: "" if pd.isna(v) else str(v))
+        for _, row in df.iterrows():
+            major = str(row.get("大分類", "") or "").strip()
+            minor = str(row.get("中分類", "") or "").strip()
+            pid = parent_id_map.get(major, pd.NA)
+            parent_ids.append(pid if pid else pd.NA)
+
+            # 中分類を備考の先頭に退避
+            if minor:
+                existing_note = str(row.get("備考", "") or "")
+                if existing_note == "nan":
+                    existing_note = ""
+                prefix = f"[旧中分類: {minor}]"
+                if prefix not in existing_note:
+                    new_note = f"{prefix} {existing_note}".strip()
+                    df.at[row.name, "備考"] = new_note
+
+        df[self._meta_parent_id_column] = parent_ids
+
+        # 大分類・中分類列を削除
+        cols_to_drop = [c for c in ["大分類", "中分類"] if c in df.columns]
+        if cols_to_drop:
+            df = df.drop(columns=cols_to_drop)
+
+        # 親タスク行を追加
+        if parent_rows:
+            parent_df = pd.DataFrame(parent_rows)
+            # 列を揃える
+            for col in df.columns:
+                if col not in parent_df.columns:
+                    parent_df[col] = pd.NA
+            parent_df = parent_df[df.columns]
+            df = pd.concat([parent_df, df], ignore_index=True)
+
+        return df
+
+    def _check_circular_ref(self, task_id: str, new_parent_id: str) -> bool:
+        """new_parent_idがtask_idの子孫であればTrue（循環参照）。"""
+        if not new_parent_id or not task_id:
+            return False
+        if task_id == new_parent_id:
+            return True
+        visited = set()
+        current = new_parent_id
+        while current:
+            if current == task_id:
+                return True
+            if current in visited:
+                break
+            visited.add(current)
+            parent_row = self._df[self._df[self._meta_id_column] == current]
+            if parent_row.empty:
+                break
+            current = str(parent_row.iloc[0].get(self._meta_parent_id_column, "") or "").strip()
+            if not current:
+                break
+        return False
+
+    def get_children(self, task_id: str) -> List[Dict[str, Any]]:
+        """指定タスクの直接の子タスク一覧を返す。"""
+        with self._lock:
+            mask = self._df[self._meta_parent_id_column] == task_id
+            children = self._df[mask]
+            return [
+                self._format_row(i, children.iloc[j])
+                for j, i in enumerate(children.index)
+            ]
+
+    def get_descendant_ids(self, task_id: str) -> List[str]:
+        """指定タスクの全子孫IDを再帰的に収集。"""
+        result: List[str] = []
+        queue = [task_id]
+        while queue:
+            current = queue.pop(0)
+            mask = self._df[self._meta_parent_id_column] == current
+            child_ids = self._df.loc[mask, self._meta_id_column].tolist()
+            for cid in child_ids:
+                cid_str = str(cid).strip()
+                if cid_str and cid_str not in result:
+                    result.append(cid_str)
+                    queue.append(cid_str)
+        return result
+
+    def get_ancestor_ids(self, task_id: str) -> List[str]:
+        """指定タスクの全祖先IDを返す。"""
+        result: List[str] = []
+        current = task_id
+        visited = set()
+        while current:
+            if current in visited:
+                break
+            visited.add(current)
+            row = self._df[self._df[self._meta_id_column] == current]
+            if row.empty:
+                break
+            parent_id = str(row.iloc[0].get(self._meta_parent_id_column, "") or "").strip()
+            if not parent_id:
+                break
+            result.append(parent_id)
+            current = parent_id
+        return result
+
+    def get_task_tree(self) -> List[Dict[str, Any]]:
+        """タスクをツリー構造(children配列付き)で返す。"""
+        with self._lock:
+            tasks = [self._format_row(i, self._df.iloc[i]) for i in range(len(self._df))]
+            id_map: Dict[str, Dict[str, Any]] = {}
+            for t in tasks:
+                t["children"] = []
+                id_map[t["__kanban_id"]] = t
+            roots: List[Dict[str, Any]] = []
+            for t in tasks:
+                pid = t.get("__parent_id", "")
+                if pid and pid in id_map:
+                    id_map[pid]["children"].append(t)
+                else:
+                    roots.append(t)
+            return roots
 
     def _ensure_row_ids(self, df: pd.DataFrame) -> pd.DataFrame:
         df = self._ensure_meta_columns(df.copy())
@@ -496,16 +698,17 @@ class TaskStore:
                 self._rebuild_statuses_from_df()
 
     def _format_row(self, idx: int, row: pd.Series) -> Dict[str, Any]:
+        parent_id = row.get(self._meta_parent_id_column)
         return {
             "No": int(idx + 1),
             "ステータス": "" if pd.isna(row["ステータス"]) else str(row["ステータス"]),
-            "大分類": "" if pd.isna(row["大分類"]) else str(row["大分類"]),
-            "中分類": "" if pd.isna(row["中分類"]) else str(row["中分類"]),
             "タスク": "" if pd.isna(row["タスク"]) else str(row["タスク"]),
             "担当者": "" if pd.isna(row["担当者"]) else str(row["担当者"]),
             "優先度": format_priority(row["優先度"]),
             "期限": to_iso_date_str(row["期限"]),
             "備考": "" if pd.isna(row["備考"]) else str(row["備考"]),
+            "__kanban_id": str(row.get(self._meta_id_column, "") or "").strip(),
+            "__parent_id": "" if (parent_id is None or pd.isna(parent_id) or str(parent_id).strip() == "") else str(parent_id).strip(),
         }
 
     def _resolve_row_index(self, no_value: int) -> int:
@@ -522,26 +725,62 @@ class TaskStore:
         if name and name not in self._statuses:
             self._statuses.append(name)
 
+    def _auto_sync_parent_status(self, child_id: str):
+        row = self._df[self._df[self._meta_id_column] == child_id]
+        if row.empty:
+            return
+        parent_val = row.iloc[0].get(self._meta_parent_id_column)
+        parent_id = "" if parent_val is None or pd.isna(parent_val) else str(parent_val).strip()
+        if not parent_id:
+            return
+        siblings = self._df[self._df[self._meta_parent_id_column] == parent_id]
+        if len(siblings) == 0:
+            return
+        all_completed = all(
+            str(s.get("ステータス", "") or "").strip() == "完了"
+            for _, s in siblings.iterrows()
+        )
+        parent_row = self._df[self._df[self._meta_id_column] == parent_id]
+        if parent_row.empty:
+            return
+        current_parent_status = str(parent_row.iloc[0].get("ステータス", "") or "").strip()
+
+        if all_completed and current_parent_status != "完了":
+            self._df.loc[self._df[self._meta_id_column] == parent_id, "ステータス"] = "完了"
+            self._ensure_status_registered("完了")
+        elif not all_completed and current_parent_status == "完了":
+            self._df.loc[self._df[self._meta_id_column] == parent_id, "ステータス"] = "進行中"
+            self._ensure_status_registered("進行中")
+        else:
+            return
+
+        parent_row_id = str(parent_row.iloc[0][self._meta_id_column])
+        self._dirty_row_ids.add(parent_row_id)
+        self._auto_sync_parent_status(parent_id)
+
     def add_task(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         with self._lock:
             task = dict(payload)
 
             status = str(task.get("ステータス", "") or "").strip()
-            major = str(task.get("大分類", "") or "").strip()
-            minor = str(task.get("中分類", "") or "").strip()
             title = str(task.get("タスク", "") or "").strip()
             assignee = str(task.get("担当者", "") or "").strip()
             notes = str(task.get("備考", "") or "")
             due = from_iso_date_str(task.get("期限", ""))
             priority = normalize_priority(task.get("優先度"))
+            parent_id = str(task.get("__parent_id", "") or task.get("parent_id", "") or "").strip()
 
             if not title:
                 raise ValueError("タスクは必須項目です。")
 
+            if parent_id:
+                # 循環参照チェック（新規タスクなので親のみチェック）
+                parent_exists = not self._df[self._df[self._meta_id_column] == parent_id].empty
+                if not parent_exists:
+                    raise ValueError(f"親タスクID {parent_id} が見つかりません。")
+
             row = {
                 "ステータス": status,
-                "大分類": major,
-                "中分類": minor,
                 "タスク": title,
                 "担当者": assignee,
                 "優先度": priority,
@@ -555,10 +794,14 @@ class TaskStore:
             full_row.update(row)
             row_id = self._generate_row_id()
             full_row[self._meta_id_column] = row_id
+            if parent_id:
+                full_row[self._meta_parent_id_column] = parent_id
             self._df.loc[new_index] = full_row
             self._ensure_status_registered(status)
             self._dirty_row_ids.add(row_id)
             self._deleted_row_ids.discard(row_id)
+            if parent_id:
+                self._auto_sync_parent_status(row_id)
             return self._format_row(new_index, self._df.iloc[new_index])
 
     def update_task(self, no_value: int, patch: Dict[str, Any]) -> Dict[str, Any]:
@@ -570,10 +813,6 @@ class TaskStore:
 
             if "ステータス" in patch:
                 updates["ステータス"] = str(patch["ステータス"] or "").strip()
-            if "大分類" in patch:
-                updates["大分類"] = str(patch["大分類"] or "").strip()
-            if "中分類" in patch:
-                updates["中分類"] = str(patch["中分類"] or "").strip()
             if "タスク" in patch:
                 title = str(patch["タスク"] or "").strip()
                 if not title:
@@ -588,6 +827,20 @@ class TaskStore:
             if "備考" in patch:
                 updates["備考"] = str(patch["備考"] or "")
 
+            # __parent_id の更新
+            if "__parent_id" in patch or "parent_id" in patch:
+                new_parent_id = str(patch.get("__parent_id", patch.get("parent_id", "")) or "").strip()
+                current_id = self._get_row_id_at_index(row_index)
+                if new_parent_id:
+                    # 循環参照チェック
+                    if self._check_circular_ref(current_id, new_parent_id):
+                        raise ValueError("循環参照が検出されました。親子関係を変更できません。")
+                    # 親タスクの存在チェック
+                    parent_exists = not self._df[self._df[self._meta_id_column] == new_parent_id].empty
+                    if not parent_exists:
+                        raise ValueError(f"親タスクID {new_parent_id} が見つかりません。")
+                updates[self._meta_parent_id_column] = new_parent_id if new_parent_id else pd.NA
+
             if "ステータス" in updates:
                 self._ensure_status_registered(updates["ステータス"])
 
@@ -597,12 +850,16 @@ class TaskStore:
             row_id = self._get_row_id_at_index(row_index)
             self._dirty_row_ids.add(row_id)
             self._deleted_row_ids.discard(row_id)
+
+            if "ステータス" in updates:
+                self._auto_sync_parent_status(row_id)
+
             return self._format_row(i, self._df.loc[row_index])
 
     def move_task(self, no_value: int, new_status: str) -> Dict[str, Any]:
         return self.update_task(int(no_value), {"ステータス": new_status})
 
-    def delete_task(self, no_value: int) -> bool:
+    def delete_task(self, no_value: int, cascade: bool = True) -> bool:
         with self._lock:
             try:
                 idx = self._resolve_row_index(int(no_value))
@@ -610,7 +867,21 @@ class TaskStore:
                 return False
             row_index = self._df.index[idx]
             row_id = self._get_row_id_at_index(row_index)
-            self._df = self._df.drop(index=row_index).reset_index(drop=True)
+
+            if cascade:
+                descendant_ids = self.get_descendant_ids(row_id)
+                if descendant_ids:
+                    self._df = self._df[
+                        ~self._df[self._meta_id_column].isin(descendant_ids)
+                    ].reset_index(drop=True)
+            else:
+                # 子タスクの__parent_idをクリアしてルートに昇格
+                self._df.loc[
+                    self._df[self._meta_parent_id_column] == row_id,
+                    self._meta_parent_id_column,
+                ] = pd.NA
+
+            self._df = self._df[self._df[self._meta_id_column] != row_id].reset_index(drop=True)
             self._dirty_row_ids.discard(row_id)
             self._deleted_row_ids.add(row_id)
             return True

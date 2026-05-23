@@ -8,7 +8,6 @@ const {
   parseISO: parseISODate,
   statusColor,
   toLocaleDate,
-  collectCategoryOptions,
   uniqAssignees,
 } = window.TaskAppCommon;
 
@@ -39,7 +38,7 @@ let TASKS = [];
 let STATUSES = [];
 let VALIDATIONS = {};
 let excelSyncHandlers = null;
-const VALIDATION_COLUMNS = ["ステータス", "大分類", "中分類", "タスク", "担当者", "優先度", "期限", "備考"];
+const VALIDATION_COLUMNS = ["ステータス", "タスク", "担当者", "優先度", "期限", "備考"];
 let CURRENT_DRAG = null;
 let cleanupAutoScroll = null;
 
@@ -195,33 +194,46 @@ ready(() => {
 });
 
 async function init(force = false) {
-  if (!api) return;
   if (force) {
     let payload = {};
     try {
-      const isPywebview = RUN_MODE === 'pywebview';
-      let loadedViaReload = false;
-      if (isPywebview && !hasInitialExcelLoadFlag?.() && typeof api.reload_from_excel === 'function') {
-        payload = normalizeStatePayload(await api.reload_from_excel());
-        loadedViaReload = true;
+      if (api) {
+        const isPywebview = RUN_MODE === 'pywebview';
+        let loadedViaReload = false;
+        if (isPywebview && !hasInitialExcelLoadFlag?.() && typeof api.reload_from_excel === 'function') {
+          payload = normalizeStatePayload(await api.reload_from_excel());
+          loadedViaReload = true;
+        }
+        if (isPywebview && !loadedViaReload && typeof api.get_state_snapshot === 'function') {
+          payload = normalizeStatePayload(await api.get_state_snapshot());
+        }
+        if (!Array.isArray(payload.tasks) && typeof api.get_tasks === 'function') {
+          payload.tasks = await api.get_tasks();
+        }
+        if (!Array.isArray(payload.statuses) && typeof api.get_statuses === 'function') {
+          payload.statuses = await api.get_statuses();
+        }
+        if (payload.validations === undefined && typeof api.get_validations === 'function') {
+          payload.validations = await api.get_validations();
+        }
       }
-      if (isPywebview && !loadedViaReload && typeof api.get_state_snapshot === 'function') {
-        payload = normalizeStatePayload(await api.get_state_snapshot());
-      }
-      if (!Array.isArray(payload.tasks) && typeof api.get_tasks === 'function') {
-        payload.tasks = await api.get_tasks();
-      }
-      if (!Array.isArray(payload.statuses) && typeof api.get_statuses === 'function') {
-        payload.statuses = await api.get_statuses();
-      }
-      if (payload.validations === undefined && typeof api.get_validations === 'function') {
-        payload.validations = await api.get_validations();
+      try {
+        await applyStateFromPayload(payload, { fallbackToApi: !!api });
+      } catch (err) {
+        console.error('applyStateFromPayload failed', err);
       }
     } catch (err) {
       console.error('init failed', err);
-      payload = {};
     }
-    await applyStateFromPayload(payload, { fallbackToApi: true });
+    ensureMonthDefault();
+    filterPresetManager.maybeApplyInitialPreset();
+    applyFiltersToUI();
+    syncFiltersFromUI();
+    try { renderLegend(); } catch (e) { console.error('renderLegend failed', e); }
+    try { renderCalendar(); } catch (e) { console.error('renderCalendar failed', e); }
+    try { renderBacklog(); } catch (e) { console.error('renderBacklog failed', e); }
+    filterPresetManager.updateUI();
+    updateHeaderDueSummary(TASKS);
     return;
   }
 
@@ -636,8 +648,11 @@ function renderBacklog() {
     const dueLabel = document.createElement('span');
     dueLabel.textContent = due ? `期限: ${toLocale(due)}` : '期限: 未設定';
     meta.appendChild(dueLabel);
-    meta.appendChild(createLabelValueSpan('大分類', task.大分類));
-    meta.appendChild(createLabelValueSpan('中分類', task.中分類));
+    if (task.__parent_id) {
+      const parentTask = TASKS.find(t => String(t.__kanban_id ?? '').trim() === task.__parent_id);
+      const parentName = parentTask ? (parentTask.タスク || '(無題)') : task.__parent_id;
+      meta.appendChild(createLabelValueSpan('親', parentName));
+    }
     meta.appendChild(createLabelValueSpan('重要度', task.優先度));
     meta.appendChild(createLabelValueSpan('担当', task.担当者));
     item.appendChild(meta);
@@ -687,11 +702,11 @@ function renderTaskCard(task) {
 
   meta.appendChild(createLabelValueSpan('ステータス', task.ステータス));
 
-  const majorLabel = String(task.大分類 ?? '').trim();
-  meta.appendChild(createLabelValueSpan('大分類', majorLabel));
-
-  const minorLabel = String(task.中分類 ?? '').trim();
-  meta.appendChild(createLabelValueSpan('中分類', minorLabel));
+  if (task.__parent_id) {
+    const parentTask = TASKS.find(t => String(t.__kanban_id ?? '').trim() === task.__parent_id);
+    const parentName = parentTask ? (parentTask.タスク || '(無題)') : task.__parent_id;
+    meta.appendChild(createLabelValueSpan('親', parentName));
+  }
 
   const priorityText = String(task.優先度 ?? '').trim();
   meta.appendChild(createLabelValueSpan('重要度', priorityText));

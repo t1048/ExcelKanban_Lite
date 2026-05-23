@@ -101,23 +101,28 @@ body.page-kanban {
   font-weight: 600;
 }
 
-.card-category {
+.card-parent-label {
   display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
+  align-items: center;
+  gap: 4px;
   margin-bottom: 6px;
+  font-size: 12px;
+  color: var(--muted);
 }
 
-.badge-major {
-  color: #bfdbfe;
-  background: rgba(59, 130, 246, 0.18);
-  border-color: rgba(59, 130, 246, 0.35);
+.card-parent-label .parent-arrow {
+  color: var(--accent);
 }
 
-.badge-minor {
-  color: #bbf7d0;
-  background: rgba(16, 185, 129, 0.18);
-  border-color: rgba(16, 185, 129, 0.35);
+.card-parent-label .parent-link {
+  color: var(--accent);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.card-parent-label .parent-link:hover {
+  color: #93c5fd;
 }
 
 .badge-assignee {
@@ -180,6 +185,97 @@ body.page-kanban {
   font-size: 12px;
   color: var(--muted);
   white-space: pre-wrap;
+}
+
+.card-child {
+  margin-left: 20px;
+  border-left: 2px solid rgba(96, 165, 250, 0.3);
+  border-radius: 4px 12px 12px 4px;
+}
+
+.card-child-arrow {
+  color: var(--accent);
+  font-size: 14px;
+  margin-right: 6px;
+  flex-shrink: 0;
+}
+
+.card-dragover {
+  border-color: var(--accent) !important;
+  background: rgba(96, 165, 250, 0.1) !important;
+  box-shadow: 0 0 0 2px rgba(96, 165, 250, 0.35), var(--shadow);
+}
+
+.card-child-info {
+  margin: 4px 0 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.card-child-top {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.card-child-toggle {
+  cursor: pointer;
+  user-select: none;
+  font-size: 10px;
+  color: var(--accent);
+  padding: 2px 4px;
+  border-radius: 4px;
+  line-height: 1;
+  transition: background 0.15s;
+}
+
+.card-child-toggle:hover {
+  background: rgba(96, 165, 250, 0.15);
+}
+
+.card-child-badge {
+  font-size: 11px;
+  color: var(--accent);
+  background: rgba(96, 165, 250, 0.12);
+  border: 1px solid rgba(96, 165, 250, 0.3);
+  border-radius: 999px;
+  padding: 1px 8px;
+}
+
+.card-child-progress-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.card-child-progress {
+  flex: 1;
+  height: 4px;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.card-child-progress-bar {
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent-2), #4ade80);
+  border-radius: 2px;
+  transition: width 0.3s ease;
+}
+
+.card-child-progress-bar.complete {
+  background: linear-gradient(90deg, #22c55e, #4ade80);
+}
+
+.card-child-progress-label {
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.card-child-progress-label.complete {
+  color: var(--accent-2);
 }
 
 .card.due-warning {

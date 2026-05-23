@@ -35,7 +35,7 @@ let TASKS = [];
 let STATUSES = [];
 let VALIDATIONS = {};
 let excelSyncHandlers = null;
-const VALIDATION_COLUMNS = ["ステータス", "大分類", "中分類", "タスク", "担当者", "優先度", "期限", "備考"];
+const VALIDATION_COLUMNS = ["ステータス", "タスク", "担当者", "優先度", "期限", "備考"];
 const ASSIGNEE_FILTER_ALL = '';
 const ASSIGNEE_FILTER_UNASSIGNED = '__UNASSIGNED__';
 const ASSIGNEE_UNASSIGNED_LABEL = '（未割り当て）';
@@ -217,33 +217,45 @@ ready(() => {
 });
 
 async function init(force = false) {
-  if (!api) return;
   if (force) {
     let payload = {};
     try {
-      const isPywebview = RUN_MODE === 'pywebview';
-      let loadedViaReload = false;
-      if (isPywebview && !hasInitialExcelLoadFlag?.() && typeof api.reload_from_excel === 'function') {
-        payload = normalizeStatePayload(await api.reload_from_excel());
-        loadedViaReload = true;
+      if (api) {
+        const isPywebview = RUN_MODE === 'pywebview';
+        let loadedViaReload = false;
+        if (isPywebview && !hasInitialExcelLoadFlag?.() && typeof api.reload_from_excel === 'function') {
+          payload = normalizeStatePayload(await api.reload_from_excel());
+          loadedViaReload = true;
+        }
+        if (isPywebview && !loadedViaReload && typeof api.get_state_snapshot === 'function') {
+          payload = normalizeStatePayload(await api.get_state_snapshot());
+        }
+        if (!Array.isArray(payload.tasks) && typeof api.get_tasks === 'function') {
+          payload.tasks = await api.get_tasks();
+        }
+        if (!Array.isArray(payload.statuses) && typeof api.get_statuses === 'function') {
+          payload.statuses = await api.get_statuses();
+        }
+        if (payload.validations === undefined && typeof api.get_validations === 'function') {
+          payload.validations = await api.get_validations();
+        }
       }
-      if (isPywebview && !loadedViaReload && typeof api.get_state_snapshot === 'function') {
-        payload = normalizeStatePayload(await api.get_state_snapshot());
-      }
-      if (!Array.isArray(payload.tasks) && typeof api.get_tasks === 'function') {
-        payload.tasks = await api.get_tasks();
-      }
-      if (!Array.isArray(payload.statuses) && typeof api.get_statuses === 'function') {
-        payload.statuses = await api.get_statuses();
-      }
-      if (payload.validations === undefined && typeof api.get_validations === 'function') {
-        payload.validations = await api.get_validations();
+      try {
+        await applyStateFromPayload(payload, { fallbackToApi: !!api });
+      } catch (err) {
+        console.error('applyStateFromPayload failed', err);
       }
     } catch (err) {
       console.error('init failed', err);
-      payload = {};
     }
-    await applyStateFromPayload(payload, { fallbackToApi: true });
+    ensureRangeDefaults();
+    filterPresetManager.maybeApplyInitialPreset();
+    syncFiltersFromUI();
+    try { renderSummary(); } catch (e) { console.error('renderSummary failed', e); }
+    try { renderLegend(); } catch (e) { console.error('renderLegend failed', e); }
+    try { renderAssigneeFilter(); } catch (e) { console.error('renderAssigneeFilter failed', e); }
+    try { renderTimeline(); } catch (e) { console.error('renderTimeline failed', e); }
+    updateHeaderDueSummary(TASKS);
     return;
   }
 
@@ -768,15 +780,13 @@ function renderTaskChip(task) {
     no.textContent = `No.${task.No}`;
     meta.appendChild(no);
   }
-  const majorLabel = String(task.大分類 ?? '').trim();
-  const major = document.createElement('span');
-  major.textContent = `大分類: ${majorLabel || '未設定'}`;
-  meta.appendChild(major);
-
-  const minorLabel = String(task.中分類 ?? '').trim();
-  const minor = document.createElement('span');
-  minor.textContent = `中分類: ${minorLabel || '未設定'}`;
-  meta.appendChild(minor);
+  if (task.__parent_id) {
+    const parentTask = TASKS.find(t => String(t.__kanban_id ?? '').trim() === task.__parent_id);
+    const parentName = parentTask ? (parentTask.タスク || '(無題)') : task.__parent_id;
+    const parent = document.createElement('span');
+    parent.textContent = `親: ${parentName}`;
+    meta.appendChild(parent);
+  }
 
   const priorityLabel = String(task.優先度 ?? '').trim();
   const priority = document.createElement('span');
@@ -824,6 +834,14 @@ function buildTaskLookup(from, to, assigneeFilter = ASSIGNEE_FILTER_ALL) {
     });
   });
   return map;
+}
+
+function collectAllAssignees() {
+  const assignees = new Set();
+  TASKS.forEach(task => {
+    assignees.add(task.担当者?.trim() || ASSIGNEE_UNASSIGNED_LABEL);
+  });
+  return Array.from(assignees).sort((a, b) => a.localeCompare(b, 'ja'));
 }
 
 function collectAssignees(rangeFrom, rangeTo) {
