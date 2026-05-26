@@ -112,7 +112,7 @@ class TaskStore:
                 df = df[ordered_columns].copy()
 
                 # 大分類・中分類 → 親子階層の自動移行
-                if ("大分類" in df.columns or "中分類" in df.columns) and self._meta_parent_id_column not in df.columns:
+                if "大分類" in df.columns or "中分類" in df.columns:
                     try:
                         self._rotate_backups()
                         backup_path = self.excel_path.parent / (
@@ -296,6 +296,9 @@ class TaskStore:
         has_parent = self._meta_parent_id_column in df.columns
 
         if has_parent or (not has_major and not has_minor):
+            cols_to_drop = [c for c in ["大分類", "中分類"] if c in df.columns]
+            if cols_to_drop:
+                df = df.drop(columns=cols_to_drop)
             return df
 
         # バックアップは呼び出し側(load_excel)で実施済み
@@ -378,9 +381,10 @@ class TaskStore:
             parent_row = self._df[self._df[self._meta_id_column] == current]
             if parent_row.empty:
                 break
-            current = str(parent_row.iloc[0].get(self._meta_parent_id_column, "") or "").strip()
-            if not current:
+            parent_val = parent_row.iloc[0].get(self._meta_parent_id_column, "")
+            if parent_val is None or pd.isna(parent_val) or str(parent_val).strip() == "":
                 break
+            current = str(parent_val).strip()
         return False
 
     def get_children(self, task_id: str) -> List[Dict[str, Any]]:
@@ -420,9 +424,10 @@ class TaskStore:
             row = self._df[self._df[self._meta_id_column] == current]
             if row.empty:
                 break
-            parent_id = str(row.iloc[0].get(self._meta_parent_id_column, "") or "").strip()
-            if not parent_id:
+            parent_val = row.iloc[0].get(self._meta_parent_id_column, "")
+            if parent_val is None or pd.isna(parent_val) or str(parent_val).strip() == "":
                 break
+            parent_id = str(parent_val).strip()
             result.append(parent_id)
             current = parent_id
         return result
@@ -910,6 +915,7 @@ class TaskStore:
             )
 
             df = self._df.copy()
+            df = df.drop(columns=[c for c in ["大分類", "中分類"] if c in df.columns])
             wb = None
             try:
                 if self.excel_path.exists():

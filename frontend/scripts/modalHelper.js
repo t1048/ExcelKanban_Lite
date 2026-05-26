@@ -11,7 +11,7 @@
     function openCreate(defaults = {}) {
       CURRENT_EDIT = null;
       const { statuses, priorityHelper } = getDataRefs();
-      openModal({
+      const task = {
         No: '',
         'ステータス': statuses && statuses[0] || '未着手',
         '__parent_id': defaults.parent_id || '',
@@ -20,7 +20,8 @@
         '優先度': priorityHelper ? priorityHelper.getDefaultValue() : '中',
         '期限': '',
         '備考': ''
-      }, { mode: 'create' });
+      };
+      openModal(task, { mode: 'create' });
     }
 
     function openEdit(no) {
@@ -37,6 +38,72 @@
       modal.classList.remove('open');
       modal.setAttribute('aria-hidden', 'true');
       hideParentDropdown();
+    }
+
+    function renderChildTasks(containerId, currentTask, tasks, mode) {
+      const listEl = document.getElementById(containerId);
+      if (!listEl) return;
+
+      const currentKanbanId = String(currentTask.__kanban_id ?? '').trim();
+
+      listEl.innerHTML = '';
+
+      if (mode === 'create' || !currentKanbanId) {
+        const empty = document.createElement('div');
+        empty.className = 'child-tasks-empty';
+        empty.textContent = mode === 'create'
+          ? '（保存後に子タスクを追加できます）'
+          : '（子タスクはありません）';
+        listEl.appendChild(empty);
+        return;
+      }
+
+      const children = tasks.filter(t => String(t.__parent_id ?? '').trim() === currentKanbanId);
+
+      if (children.length === 0) {
+        const empty = document.createElement('div');
+        empty.className = 'child-tasks-empty';
+        empty.textContent = '（子タスクはありません）';
+        listEl.appendChild(empty);
+        return;
+      }
+
+      children.forEach(child => {
+        const item = document.createElement('div');
+        item.className = 'child-task-item';
+
+        const arrow = document.createElement('span');
+        arrow.className = 'child-task-arrow';
+        arrow.textContent = '\u21B3';
+        item.appendChild(arrow);
+
+        const link = document.createElement('button');
+        link.type = 'button';
+        link.className = 'child-task-link';
+        link.textContent = child['タスク'] || '(無題)';
+        link.addEventListener('click', () => {
+          closeModal();
+          setTimeout(() => openEdit(child.No), 50);
+        });
+        item.appendChild(link);
+
+        const status = document.createElement('span');
+        status.className = 'child-task-status';
+        status.textContent = child['ステータス'] || '';
+        item.appendChild(status);
+
+        listEl.appendChild(item);
+      });
+
+      const completed = children.filter(c => {
+        const s = String(c['ステータス'] ?? '').trim();
+        return s === '完了' || s === '完了済み' || s === '完了済';
+      }).length;
+
+      const summary = document.createElement('div');
+      summary.className = 'child-tasks-summary';
+      summary.textContent = `${children.length}件の子タスク（${completed}件完了）`;
+      listEl.appendChild(summary);
     }
 
     function openModal(task, { mode }) {
@@ -107,6 +174,80 @@
         setupParentTaskSelector(fparent, fparentHidden, tasks, task.__kanban_id || '');
       }
 
+      // 親タスクリンク表示（ハイパーリンクで親の編集モーダルへ）
+      function updateParentLinkDisplay() {
+        const linkEl = document.getElementById('parent-link-display');
+        if (!linkEl) return;
+        const parentId = (fparentHidden?.value || '').trim();
+        if (!parentId) {
+          linkEl.replaceChildren();
+          linkEl.style.display = 'none';
+          return;
+        }
+        const parentTask = tasks.find(t => String(t.__kanban_id ?? '').trim() === parentId);
+        const parentName = parentTask ? parentTask.タスク : parentId;
+        linkEl.replaceChildren();
+        const arrow = document.createElement('span');
+        arrow.className = 'parent-link-arrow';
+        arrow.textContent = '\u2192';
+        const a = document.createElement('a');
+        a.href = '#';
+        a.tabIndex = 0;
+        a.textContent = parentName;
+        a.addEventListener('click', function (e) {
+          e.preventDefault();
+          if (parentTask) {
+            closeModal();
+            setTimeout(function () { openEdit(parentTask.No); }, 50);
+          }
+        });
+        a.addEventListener('keydown', function (e) {
+          if (e.key === 'Enter' && parentTask) {
+            e.preventDefault();
+            closeModal();
+            setTimeout(function () { openEdit(parentTask.No); }, 50);
+          }
+        });
+        linkEl.appendChild(arrow);
+        linkEl.appendChild(a);
+        linkEl.style.display = 'inline-flex';
+      }
+      if (fparent && fparent._taskModalParentLinkInputHandler) {
+        fparent.removeEventListener('input', fparent._taskModalParentLinkInputHandler);
+      }
+      if (fparent) {
+        fparent._taskModalParentLinkInputHandler = updateParentLinkDisplay;
+        fparent.addEventListener('input', updateParentLinkDisplay);
+      }
+      updateParentLinkDisplay();
+
+      // 子タスク表示
+      renderChildTasks('child-tasks-list', task, tasks, mode);
+
+      // 表示条件の整理（親タスク欄／子タスク欄の出し分け）
+      const parentTaskRow = document.getElementById('parent-task-row');
+      const childTaskRow = document.getElementById('child-tasks-row');
+      const currentKanbanId = String(task.__kanban_id ?? '').trim();
+
+      if (mode === 'create') {
+        if (parentTaskRow) parentTaskRow.style.display = '';
+        if (childTaskRow) childTaskRow.style.display = 'none';
+      } else if (mode === 'edit') {
+        const hasChildren = currentKanbanId && tasks.some(t =>
+          String(t.__parent_id ?? '').trim() === currentKanbanId
+        );
+        const hasParent = !!task.__parent_id;
+
+        if (hasChildren && !hasParent) {
+          if (parentTaskRow) parentTaskRow.style.display = 'none';
+          if (childTaskRow) childTaskRow.style.display = '';
+        } else {
+          if (parentTaskRow) parentTaskRow.style.display = '';
+          // 子タスクは再帰的に追加できるよう、編集時は常に表示（0件でも「＋ 子タスクを追加」を出す）
+          if (childTaskRow) childTaskRow.style.display = '';
+        }
+      }
+
       fttl.value = task['タスク'] || '';
       fwho.value = task['担当者'] || '';
 
@@ -122,9 +263,12 @@
       fnote.value = task['備考'] || '';
 
       btnDelete.style.display = mode === 'edit' ? 'inline-flex' : 'none';
+      btnAddChildTask.style.display = mode === 'edit' ? 'block' : 'none';
 
       document.getElementById('btn-close').onclick = closeModal;
       document.getElementById('btn-cancel').onclick = closeModal;
+
+      const taskKanbanId = task['__kanban_id'] || '';
 
       btnDelete.onclick = async () => {
         if (!CURRENT_EDIT) return;
@@ -277,16 +421,109 @@
     };
   }
 
+  function setupAssigneeSuggestions(fassignee, tasks, uniqAssignees) {
+    const datalist = document.getElementById('modal-assignee-list');
+    if (!fassignee || !datalist) return;
+
+    const candidates = uniqAssignees(tasks);
+    const seen = new Set();
+    datalist.innerHTML = '';
+
+    candidates.forEach(name => {
+      const text = String(name ?? '').trim();
+      if (!text || seen.has(text)) return;
+      seen.add(text);
+      const opt = document.createElement('option');
+      opt.value = text;
+      datalist.appendChild(opt);
+    });
+
+    const current = String(fassignee.value ?? '').trim();
+    if (current && !seen.has(current)) {
+      const opt = document.createElement('option');
+      opt.value = current;
+      datalist.appendChild(opt);
+      seen.add(current);
+    }
+
+    fassignee.setAttribute('list', datalist.id);
+  }
+
+  function renderChildTasksInModal(containerId, currentTask, tasks, mode, onEditChild) {
+    const listEl = document.getElementById(containerId);
+    if (!listEl) return;
+
+    const currentKanbanId = String(currentTask.__kanban_id ?? '').trim();
+
+    listEl.innerHTML = '';
+
+    if (mode === 'create' || !currentKanbanId) {
+      const empty = document.createElement('div');
+      empty.className = 'child-tasks-empty';
+      empty.textContent = mode === 'create'
+        ? '（保存後に子タスクを追加できます）'
+        : '（子タスクはありません）';
+      listEl.appendChild(empty);
+      return;
+    }
+
+    const children = (Array.isArray(tasks) ? tasks : []).filter(t => String(t.__parent_id ?? '').trim() === currentKanbanId);
+
+    if (children.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'child-tasks-empty';
+      empty.textContent = '（子タスクはありません）';
+      listEl.appendChild(empty);
+      return;
+    }
+
+    children.forEach(child => {
+      const item = document.createElement('div');
+      item.className = 'child-task-item';
+
+      const arrow = document.createElement('span');
+      arrow.className = 'child-task-arrow';
+      arrow.textContent = '\u21B3';
+      item.appendChild(arrow);
+
+      const link = document.createElement('button');
+      link.type = 'button';
+      link.className = 'child-task-link';
+      link.textContent = child['タスク'] || '(無題)';
+      link.addEventListener('click', () => {
+        if (typeof onEditChild === 'function') {
+          onEditChild(child.No);
+        }
+      });
+      item.appendChild(link);
+
+      const status = document.createElement('span');
+      status.className = 'child-task-status';
+      status.textContent = child['ステータス'] || '';
+      item.appendChild(status);
+
+      listEl.appendChild(item);
+    });
+
+    const completed = children.filter(c => {
+      const s = String(c['ステータス'] ?? '').trim();
+      return s === '完了' || s === '完了済み' || s === '完了済';
+    }).length;
+
+    const summary = document.createElement('div');
+    summary.className = 'child-tasks-summary';
+    summary.textContent = `${children.length}件の子タスク（${completed}件完了）`;
+    listEl.appendChild(summary);
+  }
+
   function setupParentTaskSelector(inputEl, hiddenEl, tasks, currentTaskId) {
     if (!inputEl || !hiddenEl) return;
 
     const buildTreeOptions = () => {
       const buildTaskTree = window.TaskAppCommon?.buildTaskTree;
       const flattenTree = window.TaskAppCommon?.flattenTree;
-      const isAncestor = window.TaskAppCommon?.isAncestor;
       const list = Array.isArray(tasks) ? tasks : [];
 
-      // 自分自身と子孫を除外
       const descendantIds = window.TaskAppCommon?.getDescendantIds(currentTaskId, list) || [];
       const excludeIds = new Set([currentTaskId, ...descendantIds]);
 
@@ -299,9 +536,10 @@
           const id = String(node.__kanban_id ?? '').trim();
           if (!id) return;
           const disabled = excludeIds.has(id);
-          const indent = '　'.repeat(node._depth);
+          const indent = '\u3000'.repeat(node._depth);
+          const statusText = node['ステータス'] ? `[${node['ステータス']}] ` : '';
           options.push({
-            label: `${indent}${node.タスク || '(無題)'}`,
+            label: `${indent}${statusText}${node.タスク || '(無題)'}`,
             value: id,
             depth: node._depth,
             disabled,
@@ -312,8 +550,9 @@
           const id = String(t.__kanban_id ?? '').trim();
           if (!id) return;
           const disabled = excludeIds.has(id);
+          const statusText = t['ステータス'] ? `[${t['ステータス']}] ` : '';
           options.push({
-            label: t.タスク || '(無題)',
+            label: `${statusText}${t.タスク || '(無題)'}`,
             value: id,
             depth: 0,
             disabled,
@@ -363,8 +602,9 @@
 
     const selectOption = (opt) => {
       hiddenEl.value = opt.value;
-      inputEl.value = opt.value === '' ? '' : opt.label.replace(/^　+/, '');
+      inputEl.value = opt.value === '' ? '' : opt.label.replace(/^\u3000+/, '');
       hideParentDropdown();
+      inputEl.dispatchEvent(new Event('input', { bubbles: true }));
     };
 
     const showDropdown = () => {
@@ -372,17 +612,25 @@
       dropdownEl.style.display = 'block';
     };
 
-    const hideParentDropdown = () => {
-      dropdownEl.style.display = 'none';
-      activeIndex = -1;
-    };
+    if (inputEl._taskModalSelectorFocusHandler) {
+      inputEl.removeEventListener('focus', inputEl._taskModalSelectorFocusHandler);
+    }
+    if (inputEl._taskModalSelectorInputHandler) {
+      inputEl.removeEventListener('input', inputEl._taskModalSelectorInputHandler);
+    }
+    if (inputEl._taskModalSelectorKeydownHandler) {
+      inputEl.removeEventListener('keydown', inputEl._taskModalSelectorKeydownHandler);
+    }
+    if (inputEl._taskModalSelectorBlurHandler) {
+      inputEl.removeEventListener('blur', inputEl._taskModalSelectorBlurHandler);
+    }
 
-    inputEl.addEventListener('focus', showDropdown);
-    inputEl.addEventListener('input', () => {
+    const handleFocus = showDropdown;
+    const handleInput = () => {
       hiddenEl.value = '';
       showDropdown();
-    });
-    inputEl.addEventListener('keydown', (e) => {
+    };
+    const handleKeydown = (e) => {
       if (dropdownEl.style.display === 'none') return;
       const items = dropdownEl.querySelectorAll('li:not(.disabled)');
       if (e.key === 'ArrowDown') {
@@ -400,44 +648,26 @@
       } else if (e.key === 'Escape') {
         hideParentDropdown();
       }
-    });
-    inputEl.addEventListener('blur', () => {
+    };
+    const handleBlur = () => {
       setTimeout(() => hideParentDropdown(), 150);
-    });
+    };
+
+    inputEl._taskModalSelectorFocusHandler = handleFocus;
+    inputEl._taskModalSelectorInputHandler = handleInput;
+    inputEl._taskModalSelectorKeydownHandler = handleKeydown;
+    inputEl._taskModalSelectorBlurHandler = handleBlur;
+
+    inputEl.addEventListener('focus', handleFocus);
+    inputEl.addEventListener('input', handleInput);
+    inputEl.addEventListener('keydown', handleKeydown);
+    inputEl.addEventListener('blur', handleBlur);
   }
 
   function hideParentDropdown() {
     document.querySelectorAll('.parent-search-dropdown').forEach(el => {
       el.style.display = 'none';
     });
-  }
-
-  function setupAssigneeSuggestions(fassignee, tasks, uniqAssignees) {
-    const datalist = document.getElementById('modal-assignee-list');
-    if (!fassignee || !datalist) return;
-
-    const candidates = uniqAssignees(tasks);
-    const seen = new Set();
-    datalist.innerHTML = '';
-
-    candidates.forEach(name => {
-      const text = String(name ?? '').trim();
-      if (!text || seen.has(text)) return;
-      seen.add(text);
-      const opt = document.createElement('option');
-      opt.value = text;
-      datalist.appendChild(opt);
-    });
-
-    const current = String(fassignee.value ?? '').trim();
-    if (current && !seen.has(current)) {
-      const opt = document.createElement('option');
-      opt.value = current;
-      datalist.appendChild(opt);
-      seen.add(current);
-    }
-
-    fassignee.setAttribute('list', datalist.id);
   }
 
   function updateActiveItem(items) {
@@ -451,7 +681,9 @@
 
   global.TaskModalHelper = {
     createTaskModal,
-    setupParentTaskSelector,
     setupAssigneeSuggestions,
+    setupParentTaskSelector,
+    hideParentDropdown,
+    renderChildTasksInModal,
   };
 }(window));

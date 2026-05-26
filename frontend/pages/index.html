@@ -67,13 +67,19 @@
           <label for="f-status">ステータス</label>
           <select id="f-status"></select>
         </div>
-        <div class="row">
-          <label for="f-parent">親タスク</label>
+        <div class="row" id="parent-task-row">
+          <label for="f-parent">上位タスク</label>
           <div class="parent-input-row">
             <input type="text" id="f-parent" placeholder="タスク名で検索..." autocomplete="off" />
-            <button type="button" id="btn-add-child-task" class="btn-icon-add-child" title="子タスクを追加">＋</button>
+            <span id="parent-link-display" class="parent-link-display"></span>
           </div>
           <input type="hidden" id="f-parent-hidden" />
+          <div class="parent-help-text">子タスクはカンバンや一覧で親の下に階層表示されます</div>
+        </div>
+        <div class="row" id="child-tasks-row">
+          <label>子タスク</label>
+          <div id="child-tasks-list" class="child-tasks-list"></div>
+          <button type="button" id="btn-add-child-task" class="btn-add-child">＋ 子タスクを追加</button>
         </div>
         <div class="row">
           <label for="f-priority">優先度</label>
@@ -118,6 +124,7 @@
   <script src="../scripts/excelSync.js" defer></script>
   <script src="../scripts/filter-ui.js" defer></script>
   <script src="../scripts/pageBase.js" defer></script>
+  <script src="../scripts/modalHelper.js" defer></script>
   <script src="../scripts/index.js" defer></script>
 </body>
 

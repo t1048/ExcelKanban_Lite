@@ -1159,6 +1159,85 @@ function openModal(task, { mode }) {
     }
   }
 
+  // 親タスクリンク表示
+  const updateParentLinkDisplay = () => {
+    const linkEl = document.getElementById('parent-link-display');
+    if (!linkEl) return;
+    const parentId = (fparentHidden?.value || '').trim();
+    if (!parentId) {
+      linkEl.replaceChildren();
+      linkEl.style.display = 'none';
+      return;
+    }
+    const parentTask = TASKS.find(t => String(t.__kanban_id ?? '').trim() === parentId);
+    const parentName = parentTask ? parentTask.タスク : parentId;
+    linkEl.replaceChildren();
+    const arrow = document.createElement('span');
+    arrow.className = 'parent-link-arrow';
+    arrow.textContent = '\u2192';
+    const a = document.createElement('a');
+    a.href = '#';
+    a.tabIndex = 0;
+    a.textContent = parentName;
+    a.addEventListener('click', (e) => {
+      e.preventDefault();
+      if (parentTask) {
+        closeModal();
+        setTimeout(() => openEdit(parentTask.No), 50);
+      }
+    });
+    a.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && parentTask) {
+        e.preventDefault();
+        closeModal();
+        setTimeout(() => openEdit(parentTask.No), 50);
+      }
+    });
+    linkEl.appendChild(arrow);
+    linkEl.appendChild(a);
+    linkEl.style.display = 'inline-flex';
+  };
+  if (fparent && fparent._taskModalParentLinkInputHandler) {
+    fparent.removeEventListener('input', fparent._taskModalParentLinkInputHandler);
+  }
+  if (fparent) {
+    fparent._taskModalParentLinkInputHandler = updateParentLinkDisplay;
+    fparent.addEventListener('input', updateParentLinkDisplay);
+  }
+  updateParentLinkDisplay();
+
+  // 子タスク表示
+  if (typeof window.TaskModalHelper?.renderChildTasksInModal === 'function') {
+    window.TaskModalHelper.renderChildTasksInModal('child-tasks-list', task, TASKS, mode, (childNo) => {
+      closeModal();
+      setTimeout(() => openEdit(childNo), 50);
+    });
+  }
+
+  // 表示条件の整理（親タスク欄／子タスク欄の出し分け）
+  const parentTaskRow = document.getElementById('parent-task-row');
+  const childTaskRow = document.getElementById('child-tasks-row');
+  const currentKanbanId = String(task.__kanban_id ?? '').trim();
+
+  if (mode === 'create') {
+    if (parentTaskRow) parentTaskRow.style.display = '';
+    if (childTaskRow) childTaskRow.style.display = 'none';
+  } else if (mode === 'edit') {
+    const hasChildren = currentKanbanId && TASKS.some(t =>
+      String(t.__parent_id ?? '').trim() === currentKanbanId
+    );
+    const hasParent = !!task.__parent_id;
+
+    if (hasChildren && !hasParent) {
+      if (parentTaskRow) parentTaskRow.style.display = 'none';
+      if (childTaskRow) childTaskRow.style.display = '';
+    } else {
+      if (parentTaskRow) parentTaskRow.style.display = '';
+      // 子タスクは再帰的に追加できるよう、編集時は常に表示（0件でも「＋ 子タスクを追加」を出す）
+      if (childTaskRow) childTaskRow.style.display = '';
+    }
+  }
+
   fttl.value = task.タスク || '';
   fwho.value = task.担当者 || '';
   setupAssigneeInputSuggestions(fwho);
@@ -1167,6 +1246,7 @@ function openModal(task, { mode }) {
   fnote.value = task.備考 || '';
 
   btnDelete.style.display = (mode === 'edit') ? 'inline-flex' : 'none';
+  btnAddChildTask.style.display = (mode === 'edit') ? 'block' : 'none';
 
   // ハンドラ
   document.getElementById('btn-close').onclick = closeModal;
@@ -1324,6 +1404,9 @@ function closeModal() {
   const modal = document.getElementById('modal');
   modal.classList.remove('open');
   modal.setAttribute('aria-hidden', 'true');
+  if (typeof window.TaskModalHelper?.hideParentDropdown === 'function') {
+    window.TaskModalHelper.hideParentDropdown();
+  }
 }
 
 window.addEventListener('resize', scheduleHorizontalScrollbarUpdate);

@@ -255,31 +255,45 @@ body.page-kanban {
 .modal {
   position: fixed;
   inset: 0;
-  display: none;
-  align-items: center;
-  justify-content: center;
-  padding: 20px;
-  background: rgba(15, 23, 42, 0.78);
-  backdrop-filter: blur(6px);
+  display: flex;
+  align-items: stretch;
+  justify-content: flex-end;
+  padding: 0;
+  background: rgba(15, 23, 42, 0);
+  backdrop-filter: blur(0px);
   z-index: 200;
+  pointer-events: none;
+  transition: background 0.3s ease, backdrop-filter 0.3s ease;
 }
 
 .modal.open {
-  display: flex;
+  background: rgba(15, 23, 42, 0.78);
+  backdrop-filter: blur(6px);
+  pointer-events: auto;
 }
 
 .modal-card {
-  width: min(680px, calc(100% - 24px));
+  width: min(560px, 90vw);
+  height: 100%;
   background: var(--panel);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 16px;
+  border-left: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 16px 0 0 16px;
   box-shadow: var(--shadow);
-  padding: 18px;
+  padding: 24px;
+  transform: translateX(100%);
+  transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.modal.open .modal-card {
+  transform: translateX(0);
 }
 
 .modal-card.validation-card {
-  width: min(720px, calc(100% - 24px));
-  max-height: calc(100% - 32px);
+  width: min(560px, 90vw);
+  max-height: 100%;
   display: flex;
   flex-direction: column;
 }
@@ -455,6 +469,122 @@ body.page-kanban {
   to { transform: rotate(360deg); }
 }
 
+.child-tasks-list {
+  min-height: 40px;
+  padding: 8px 0;
+  font-size: 13px;
+  color: var(--caption, #64748b);
+}
+
+.child-tasks-empty {
+  color: var(--caption, #94a3b8);
+  font-size: 12px;
+  padding: 4px 0;
+}
+
+.child-task-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  margin-bottom: 2px;
+  cursor: default;
+}
+
+.child-task-item:hover {
+  background: rgba(56, 189, 248, 0.08);
+}
+
+.child-task-arrow {
+  color: var(--caption, #94a3b8);
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+.child-task-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.child-task-link {
+  color: var(--accent, #38bdf8);
+  cursor: pointer;
+  border: none;
+  background: none;
+  font-size: 13px;
+  padding: 0;
+  text-decoration: none;
+  text-align: left;
+}
+
+.child-task-link:hover {
+  text-decoration: underline;
+  color: #7dd3fc;
+}
+
+.child-task-status {
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 10px;
+  background: rgba(148, 163, 184, 0.15);
+  color: var(--caption, #94a3b8);
+  flex-shrink: 0;
+}
+
+.child-tasks-summary {
+  font-size: 12px;
+  color: var(--caption, #94a3b8);
+  padding: 4px 0;
+  margin-top: 2px;
+}
+
+.btn-add-child {
+  appearance: none;
+  border: 1px solid rgba(148, 163, 184, 0.4);
+  border-radius: 10px;
+  cursor: pointer;
+  padding: 8px 16px;
+  font-size: 13px;
+  line-height: 1.4;
+  background: rgba(56, 189, 248, 0.12);
+  color: var(--accent);
+  transition: background 0.2s ease;
+  width: 100%;
+  margin-top: 4px;
+}
+
+.btn-add-child:hover {
+  background: rgba(56, 189, 248, 0.25);
+}
+
+.parent-link-display {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 13px;
+  margin-left: 8px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.parent-link-display .parent-link-arrow {
+  color: var(--caption, #94a3b8);
+}
+
+.parent-link-display a {
+  color: var(--accent, #38bdf8);
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.parent-link-display a:hover {
+  text-decoration: underline;
+  color: #7dd3fc;
+}
+
 .parent-input-row {
   display: flex;
   gap: 0;
@@ -464,7 +594,14 @@ body.page-kanban {
 
 .parent-input-row input {
   flex: 1;
-  border-radius: 10px 0 0 10px;
+  border-radius: 10px;
+}
+
+.parent-help-text {
+  font-size: 11px;
+  color: var(--caption, #94a3b8);
+  margin-top: 4px;
+  line-height: 1.4;
 }
 
 .btn-icon-add-child {
